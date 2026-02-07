@@ -522,6 +522,113 @@ done:
 	}
 }
 
+// Stream and consumer management over TCP
+func TestIntegrationStreamConsumerManagement(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	node, _ := makeTestNode(t, "node-mgmt")
+
+	addr := freePort(t)
+	server := NewServer(addr, node)
+	if err := server.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+
+	conn, err := net.DialTimeout("tcp", server.Addr(), 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	send := func(cmd string) string {
+		t.Helper()
+		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		conn.Write([]byte(cmd))
+		buf := make([]byte, 4096)
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, err := conn.Read(buf)
+		if err != nil {
+			t.Fatalf("read response for %q: %v", cmd, err)
+		}
+		return strings.TrimRight(string(buf[:n]), "\r\n")
+	}
+
+	// Create a stream via protocol
+	resp := send("STREAM CREATE {\"name\":\"events\",\"subjects\":[\"events.>\"]}\r\n")
+	if !strings.HasPrefix(resp, "+OK") {
+		t.Fatalf("stream create: %q", resp)
+	}
+
+	// List streams
+	resp = send("STREAM LIST\r\n")
+	if !strings.Contains(resp, "events") {
+		t.Fatalf("stream list should contain 'events': %q", resp)
+	}
+
+	// Stream info
+	resp = send("STREAM INFO events\r\n")
+	if !strings.Contains(resp, "+STREAM.INFO") {
+		t.Fatalf("expected +STREAM.INFO, got: %q", resp)
+	}
+	if !strings.Contains(resp, "\"name\":\"events\"") {
+		t.Fatalf("stream info should contain name: %q", resp)
+	}
+
+	// Publish a message to confirm the stream is functional
+	resp = send("PUB events.click mykey 1000000000 5\r\nhello\r\n")
+	if !strings.HasPrefix(resp, "+OK") {
+		t.Fatalf("publish: %q", resp)
+	}
+
+	// Create a consumer via protocol
+	resp = send("CONSUMER CREATE {\"name\":\"my-consumer\",\"stream\":\"events\",\"window_duration\":\"2s\",\"watermark_timeout\":\"5s\"}\r\n")
+	if !strings.HasPrefix(resp, "+OK") {
+		t.Fatalf("consumer create: %q", resp)
+	}
+
+	// List consumers
+	resp = send("CONSUMER LIST events\r\n")
+	if !strings.Contains(resp, "my-consumer") {
+		t.Fatalf("consumer list should contain 'my-consumer': %q", resp)
+	}
+
+	// Consumer info
+	resp = send("CONSUMER INFO events my-consumer\r\n")
+	if !strings.Contains(resp, "+CONSUMER.INFO") {
+		t.Fatalf("expected +CONSUMER.INFO, got: %q", resp)
+	}
+	if !strings.Contains(resp, "\"name\":\"my-consumer\"") {
+		t.Fatalf("consumer info should contain name: %q", resp)
+	}
+
+	// Delete consumer
+	resp = send("CONSUMER DELETE events my-consumer\r\n")
+	if !strings.HasPrefix(resp, "+OK") {
+		t.Fatalf("consumer delete: %q", resp)
+	}
+
+	// Consumer should be gone
+	resp = send("CONSUMER LIST events\r\n")
+	if strings.Contains(resp, "my-consumer") {
+		t.Fatalf("consumer list should not contain deleted consumer: %q", resp)
+	}
+
+	// Delete stream
+	resp = send("STREAM DELETE events\r\n")
+	if !strings.HasPrefix(resp, "+OK") {
+		t.Fatalf("stream delete: %q", resp)
+	}
+
+	// Stream should be gone
+	resp = send("STREAM INFO events\r\n")
+	if !strings.Contains(resp, "-ERR") {
+		t.Fatalf("expected error for deleted stream: %q", resp)
+	}
+}
+
 // TC-F2: Split-brain produces correct results after heal (simulated)
 func TestIntegrationSplitBrainMerge(t *testing.T) {
 	dir := tempDir(t)

@@ -228,3 +228,155 @@ func TestFormatWindowBatch(t *testing.T) {
 		t.Errorf("expected 'WEND\\r\\n', got %q", end)
 	}
 }
+
+func TestParseStreamCreate(t *testing.T) {
+	input := `STREAM CREATE {"name":"test","subjects":["test.>"]}` + "\r\n"
+	parser := NewProtocolParser(strings.NewReader(input))
+
+	cmd, err := parser.ParseCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sc, ok := cmd.(*StreamCreateCommand)
+	if !ok {
+		t.Fatalf("expected StreamCreateCommand, got %T", cmd)
+	}
+	if sc.Config.Name != "test" {
+		t.Errorf("name: %q", sc.Config.Name)
+	}
+	if len(sc.Config.Subjects) != 1 || sc.Config.Subjects[0] != "test.>" {
+		t.Errorf("subjects: %v", sc.Config.Subjects)
+	}
+}
+
+func TestParseStreamDelete(t *testing.T) {
+	input := "STREAM DELETE mystream\r\n"
+	parser := NewProtocolParser(strings.NewReader(input))
+
+	cmd, err := parser.ParseCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sd, ok := cmd.(*StreamDeleteCommand)
+	if !ok {
+		t.Fatalf("expected StreamDeleteCommand, got %T", cmd)
+	}
+	if sd.Name != "mystream" {
+		t.Errorf("name: %q", sd.Name)
+	}
+}
+
+func TestParseStreamList(t *testing.T) {
+	input := "STREAM LIST\r\n"
+	parser := NewProtocolParser(strings.NewReader(input))
+
+	cmd, err := parser.ParseCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := cmd.(*StreamListCommand); !ok {
+		t.Fatalf("expected StreamListCommand, got %T", cmd)
+	}
+}
+
+func TestParseStreamInfo(t *testing.T) {
+	input := "STREAM INFO mystream\r\n"
+	parser := NewProtocolParser(strings.NewReader(input))
+
+	cmd, err := parser.ParseCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	si, ok := cmd.(*StreamInfoCommand)
+	if !ok {
+		t.Fatalf("expected StreamInfoCommand, got %T", cmd)
+	}
+	if si.Name != "mystream" {
+		t.Errorf("name: %q", si.Name)
+	}
+}
+
+func TestParseConsumerCreate(t *testing.T) {
+	input := `CONSUMER CREATE {"name":"my-consumer","stream":"test"}` + "\r\n"
+	parser := NewProtocolParser(strings.NewReader(input))
+
+	cmd, err := parser.ParseCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cc, ok := cmd.(*ConsumerCreateCommand)
+	if !ok {
+		t.Fatalf("expected ConsumerCreateCommand, got %T", cmd)
+	}
+	if cc.Config.Name != "my-consumer" {
+		t.Errorf("name: %q", cc.Config.Name)
+	}
+	if cc.Config.Stream != "test" {
+		t.Errorf("stream: %q", cc.Config.Stream)
+	}
+}
+
+func TestParseConsumerDelete(t *testing.T) {
+	input := "CONSUMER DELETE mystream my-consumer\r\n"
+	parser := NewProtocolParser(strings.NewReader(input))
+
+	cmd, err := parser.ParseCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cd, ok := cmd.(*ConsumerDeleteCommand)
+	if !ok {
+		t.Fatalf("expected ConsumerDeleteCommand, got %T", cmd)
+	}
+	if cd.Stream != "mystream" {
+		t.Errorf("stream: %q", cd.Stream)
+	}
+	if cd.Name != "my-consumer" {
+		t.Errorf("name: %q", cd.Name)
+	}
+}
+
+func TestParseConsumerList(t *testing.T) {
+	input := "CONSUMER LIST mystream\r\n"
+	parser := NewProtocolParser(strings.NewReader(input))
+
+	cmd, err := parser.ParseCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cl, ok := cmd.(*ConsumerListCommand)
+	if !ok {
+		t.Fatalf("expected ConsumerListCommand, got %T", cmd)
+	}
+	if cl.Stream != "mystream" {
+		t.Errorf("stream: %q", cl.Stream)
+	}
+}
+
+func TestParseConsumerInfo(t *testing.T) {
+	input := "CONSUMER INFO mystream my-consumer\r\n"
+	parser := NewProtocolParser(strings.NewReader(input))
+
+	cmd, err := parser.ParseCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ci, ok := cmd.(*ConsumerInfoCommand)
+	if !ok {
+		t.Fatalf("expected ConsumerInfoCommand, got %T", cmd)
+	}
+	if ci.Stream != "mystream" {
+		t.Errorf("stream: %q", ci.Stream)
+	}
+	if ci.Name != "my-consumer" {
+		t.Errorf("name: %q", ci.Name)
+	}
+}

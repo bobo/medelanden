@@ -85,6 +85,51 @@ type StreamInfo struct {
 	ReplicationStatus string `json:"replication_status"`
 }
 
+// StreamConfig configures a named message stream (client-side mirror of broker.StreamConfig).
+type StreamConfig struct {
+	Name              string   `json:"name"`
+	Subjects          []string `json:"subjects"`
+	MaxBytes          int64    `json:"max_bytes,omitempty"`
+	MaxAge            string   `json:"max_age,omitempty"`
+	MaxMsgs           int64    `json:"max_msgs,omitempty"`
+	ReplicationTarget int      `json:"replication_target,omitempty"`
+	FsyncPolicy       string   `json:"fsync_policy,omitempty"`
+}
+
+// StreamState is a detailed snapshot of a stream's state.
+type StreamState struct {
+	Name          string     `json:"name"`
+	Config        StreamConfig `json:"config"`
+	Messages      uint64     `json:"messages"`
+	FirstSeq      uint64     `json:"first_seq"`
+	LastSeq       uint64     `json:"last_seq"`
+	ConsumerCount int        `json:"consumer_count"`
+}
+
+// ConsumerConfig configures a durable consumer (client-side mirror of broker.ConsumerConfig).
+type ConsumerConfig struct {
+	Name             string   `json:"name"`
+	Stream           string   `json:"stream"`
+	Ordering         string   `json:"ordering,omitempty"`
+	WindowDuration   string   `json:"window_duration,omitempty"`
+	WatermarkTimeout string   `json:"watermark_timeout,omitempty"`
+	DedupKey         []string `json:"dedup_key,omitempty"`
+	LatePolicy       string   `json:"late_policy,omitempty"`
+	DeliverPolicy    string   `json:"deliver_policy,omitempty"`
+	SubjectFilter    string   `json:"subject_filter,omitempty"`
+}
+
+// ConsumerState is a detailed snapshot of a consumer's state.
+type ConsumerState struct {
+	Name         string                     `json:"name"`
+	Stream       string                     `json:"stream"`
+	Config       ConsumerConfig             `json:"config"`
+	Watermark    uint64                     `json:"watermark"`
+	LateMessages uint64                     `json:"late_messages"`
+	DedupCount   uint64                     `json:"dedup_count"`
+	Positions    map[string]*SourcePosition `json:"positions"`
+}
+
 // Subscription represents an active subscription to a subject.
 type Subscription struct {
 	consumer string
@@ -534,6 +579,142 @@ func (c *Client) Info() (*NodeInfo, error) {
 	return &info, nil
 }
 
+// CreateStream creates a new stream on the broker.
+func (c *Client) CreateStream(cfg StreamConfig) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return fmt.Errorf("medelanden: connection closed")
+	}
+
+	cfgJSON, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("medelanden: marshal config: %w", err)
+	}
+
+	cmd := fmt.Sprintf("STREAM CREATE %s\r\n", cfgJSON)
+	return c.sendAndReadOK(cmd)
+}
+
+// DeleteStream deletes a stream on the broker.
+func (c *Client) DeleteStream(name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return fmt.Errorf("medelanden: connection closed")
+	}
+
+	cmd := fmt.Sprintf("STREAM DELETE %s\r\n", name)
+	return c.sendAndReadOK(cmd)
+}
+
+// ListStreams returns the names of all streams on the broker.
+func (c *Client) ListStreams() ([]string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return nil, fmt.Errorf("medelanden: connection closed")
+	}
+
+	return c.sendAndReadJSONList("STREAM LIST\r\n", "+STREAM.LIST ")
+}
+
+// StreamInfo returns detailed state about a stream.
+func (c *Client) StreamInfo(name string) (*StreamState, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return nil, fmt.Errorf("medelanden: connection closed")
+	}
+
+	line, err := c.sendAndReadLine(fmt.Sprintf("STREAM INFO %s\r\n", name))
+	if err != nil {
+		return nil, err
+	}
+
+	if !strings.HasPrefix(line, "+STREAM.INFO ") {
+		return nil, fmt.Errorf("medelanden: unexpected response: %s", line)
+	}
+
+	var state StreamState
+	if err := json.Unmarshal([]byte(line[len("+STREAM.INFO "):]), &state); err != nil {
+		return nil, fmt.Errorf("medelanden: parse stream info: %w", err)
+	}
+	return &state, nil
+}
+
+// CreateConsumer creates a new consumer on the broker.
+func (c *Client) CreateConsumer(cfg ConsumerConfig) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return fmt.Errorf("medelanden: connection closed")
+	}
+
+	cfgJSON, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("medelanden: marshal config: %w", err)
+	}
+
+	cmd := fmt.Sprintf("CONSUMER CREATE %s\r\n", cfgJSON)
+	return c.sendAndReadOK(cmd)
+}
+
+// DeleteConsumer deletes a consumer on the broker.
+func (c *Client) DeleteConsumer(stream, name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return fmt.Errorf("medelanden: connection closed")
+	}
+
+	cmd := fmt.Sprintf("CONSUMER DELETE %s %s\r\n", stream, name)
+	return c.sendAndReadOK(cmd)
+}
+
+// ListConsumers returns the names of all consumers for a stream.
+func (c *Client) ListConsumers(stream string) ([]string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return nil, fmt.Errorf("medelanden: connection closed")
+	}
+
+	return c.sendAndReadJSONList(fmt.Sprintf("CONSUMER LIST %s\r\n", stream), "+CONSUMER.LIST ")
+}
+
+// ConsumerInfo returns detailed state about a consumer.
+func (c *Client) ConsumerInfo(stream, name string) (*ConsumerState, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return nil, fmt.Errorf("medelanden: connection closed")
+	}
+
+	line, err := c.sendAndReadLine(fmt.Sprintf("CONSUMER INFO %s %s\r\n", stream, name))
+	if err != nil {
+		return nil, err
+	}
+
+	if !strings.HasPrefix(line, "+CONSUMER.INFO ") {
+		return nil, fmt.Errorf("medelanden: unexpected response: %s", line)
+	}
+
+	var state ConsumerState
+	if err := json.Unmarshal([]byte(line[len("+CONSUMER.INFO "):]), &state); err != nil {
+		return nil, fmt.Errorf("medelanden: parse consumer info: %w", err)
+	}
+	return &state, nil
+}
+
 // --- internal helpers ---
 
 // sendAndReadOK sends a command and expects a +OK response.
@@ -601,6 +782,53 @@ func (c *Client) readOKSeq() (uint64, error) {
 		return 0, fmt.Errorf("medelanden: parse seq: %w", err)
 	}
 	return seq, nil
+}
+
+// sendAndReadLine sends a command and reads back one line, checking for errors.
+func (c *Client) sendAndReadLine(cmd string) (string, error) {
+	if err := c.conn.SetWriteDeadline(time.Now().Add(c.opts.WriteTimeout)); err != nil {
+		return "", err
+	}
+
+	if _, err := c.writer.WriteString(cmd); err != nil {
+		return "", fmt.Errorf("medelanden: write: %w", err)
+	}
+	if err := c.writer.Flush(); err != nil {
+		return "", fmt.Errorf("medelanden: flush: %w", err)
+	}
+
+	if err := c.conn.SetReadDeadline(time.Now().Add(c.opts.ReadTimeout)); err != nil {
+		return "", err
+	}
+
+	line, err := c.reader.ReadString('\n')
+	if err != nil {
+		return "", fmt.Errorf("medelanden: read response: %w", err)
+	}
+	line = strings.TrimRight(line, "\r\n")
+
+	if strings.HasPrefix(line, "-ERR ") {
+		return "", fmt.Errorf("medelanden: %s", line[5:])
+	}
+	return line, nil
+}
+
+// sendAndReadJSONList sends a command and reads back a JSON list response.
+func (c *Client) sendAndReadJSONList(cmd, prefix string) ([]string, error) {
+	line, err := c.sendAndReadLine(cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	if !strings.HasPrefix(line, prefix) {
+		return nil, fmt.Errorf("medelanden: unexpected response: %s", line)
+	}
+
+	var names []string
+	if err := json.Unmarshal([]byte(line[len(prefix):]), &names); err != nil {
+		return nil, fmt.Errorf("medelanden: parse list: %w", err)
+	}
+	return names, nil
 }
 
 // readLoop reads individual MSG lines for simple subscriptions.

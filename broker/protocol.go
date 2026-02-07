@@ -7,6 +7,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Command represents a parsed wire protocol command.
@@ -88,6 +89,70 @@ type InfoCommand struct{}
 
 func (c *InfoCommand) Type() string { return "INFO" }
 
+// StreamCreateCommand creates a new stream.
+// STREAM.CREATE <json_config>\r\n
+type StreamCreateCommand struct {
+	Config StreamConfig
+}
+
+func (c *StreamCreateCommand) Type() string { return "STREAM.CREATE" }
+
+// StreamDeleteCommand deletes a stream.
+// STREAM.DELETE <name>\r\n
+type StreamDeleteCommand struct {
+	Name string
+}
+
+func (c *StreamDeleteCommand) Type() string { return "STREAM.DELETE" }
+
+// StreamListCommand lists all streams.
+// STREAM.LIST\r\n
+type StreamListCommand struct{}
+
+func (c *StreamListCommand) Type() string { return "STREAM.LIST" }
+
+// StreamInfoCommand returns info about a stream.
+// STREAM.INFO <name>\r\n
+type StreamInfoCommand struct {
+	Name string
+}
+
+func (c *StreamInfoCommand) Type() string { return "STREAM.INFO" }
+
+// ConsumerCreateCommand creates a new consumer.
+// CONSUMER.CREATE <json_config>\r\n
+type ConsumerCreateCommand struct {
+	Config ConsumerConfig
+}
+
+func (c *ConsumerCreateCommand) Type() string { return "CONSUMER.CREATE" }
+
+// ConsumerDeleteCommand deletes a consumer.
+// CONSUMER.DELETE <stream> <name>\r\n
+type ConsumerDeleteCommand struct {
+	Stream string
+	Name   string
+}
+
+func (c *ConsumerDeleteCommand) Type() string { return "CONSUMER.DELETE" }
+
+// ConsumerListCommand lists consumers for a stream.
+// CONSUMER.LIST <stream>\r\n
+type ConsumerListCommand struct {
+	Stream string
+}
+
+func (c *ConsumerListCommand) Type() string { return "CONSUMER.LIST" }
+
+// ConsumerInfoCommand returns info about a consumer.
+// CONSUMER.INFO <stream> <name>\r\n
+type ConsumerInfoCommand struct {
+	Stream string
+	Name   string
+}
+
+func (c *ConsumerInfoCommand) Type() string { return "CONSUMER.INFO" }
+
 // ProtocolParser parses the wire protocol from a reader.
 type ProtocolParser struct {
 	reader *bufio.Reader
@@ -113,7 +178,31 @@ func (p *ProtocolParser) ParseCommand() (Command, error) {
 		return nil, fmt.Errorf("empty command")
 	}
 
-	switch strings.ToUpper(parts[0]) {
+	cmd := strings.ToUpper(parts[0])
+	// Handle dotted commands (e.g. STREAM.CREATE)
+	if len(parts) >= 2 {
+		compound := strings.ToUpper(parts[0] + "." + parts[1])
+		switch compound {
+		case "STREAM.CREATE":
+			return p.parseStreamCreate(parts)
+		case "STREAM.DELETE":
+			return p.parseStreamDelete(parts)
+		case "STREAM.LIST":
+			return &StreamListCommand{}, nil
+		case "STREAM.INFO":
+			return p.parseStreamInfo(parts)
+		case "CONSUMER.CREATE":
+			return p.parseConsumerCreate(parts)
+		case "CONSUMER.DELETE":
+			return p.parseConsumerDelete(parts)
+		case "CONSUMER.LIST":
+			return p.parseConsumerList(parts)
+		case "CONSUMER.INFO":
+			return p.parseConsumerInfo(parts)
+		}
+	}
+
+	switch cmd {
 	case "PUB":
 		return p.parsePub(parts)
 	case "MPUB":
@@ -272,6 +361,162 @@ func (p *ProtocolParser) parseResume(parts []string) (*ResumeCommand, error) {
 	}, nil
 }
 
+// wireStreamConfig is used for JSON parsing of stream configs over the wire,
+// where durations are sent as human-readable strings like "24h" instead of nanosecond integers.
+type wireStreamConfig struct {
+	Name              string   `json:"name"`
+	Subjects          []string `json:"subjects"`
+	MaxBytes          int64    `json:"max_bytes,omitempty"`
+	MaxAge            string   `json:"max_age,omitempty"`
+	MaxMsgs           int64    `json:"max_msgs,omitempty"`
+	ReplicationTarget int      `json:"replication_target,omitempty"`
+	FsyncPolicy       string   `json:"fsync_policy,omitempty"`
+	FsyncInterval     string   `json:"fsync_interval,omitempty"`
+	PlacementTags     []string `json:"placement_tags,omitempty"`
+	PlacementCount    int      `json:"placement_count,omitempty"`
+}
+
+func (p *ProtocolParser) parseStreamCreate(parts []string) (*StreamCreateCommand, error) {
+	// STREAM CREATE <json_config>\r\n
+	if len(parts) < 3 {
+		return nil, fmt.Errorf("STREAM CREATE requires JSON config argument")
+	}
+	jsonStr := strings.Join(parts[2:], " ")
+	var wire wireStreamConfig
+	if err := json.Unmarshal([]byte(jsonStr), &wire); err != nil {
+		return nil, fmt.Errorf("invalid stream config: %w", err)
+	}
+
+	cfg := StreamConfig{
+		Name:              wire.Name,
+		Subjects:          wire.Subjects,
+		MaxBytes:          wire.MaxBytes,
+		MaxMsgs:           wire.MaxMsgs,
+		ReplicationTarget: wire.ReplicationTarget,
+		PlacementTags:     wire.PlacementTags,
+		PlacementCount:    wire.PlacementCount,
+	}
+
+	if wire.FsyncPolicy != "" {
+		cfg.FsyncPolicy = FsyncPolicy(wire.FsyncPolicy)
+	}
+	if wire.MaxAge != "" {
+		d, err := time.ParseDuration(wire.MaxAge)
+		if err != nil {
+			return nil, fmt.Errorf("invalid max_age: %w", err)
+		}
+		cfg.MaxAge = d
+	}
+	if wire.FsyncInterval != "" {
+		d, err := time.ParseDuration(wire.FsyncInterval)
+		if err != nil {
+			return nil, fmt.Errorf("invalid fsync_interval: %w", err)
+		}
+		cfg.FsyncInterval = d
+	}
+
+	return &StreamCreateCommand{Config: cfg}, nil
+}
+
+func (p *ProtocolParser) parseStreamDelete(parts []string) (*StreamDeleteCommand, error) {
+	// STREAM DELETE <name>\r\n
+	if len(parts) < 3 {
+		return nil, fmt.Errorf("STREAM DELETE requires stream name")
+	}
+	return &StreamDeleteCommand{Name: parts[2]}, nil
+}
+
+func (p *ProtocolParser) parseStreamInfo(parts []string) (*StreamInfoCommand, error) {
+	// STREAM INFO <name>\r\n
+	if len(parts) < 3 {
+		return nil, fmt.Errorf("STREAM INFO requires stream name")
+	}
+	return &StreamInfoCommand{Name: parts[2]}, nil
+}
+
+// wireConsumerConfig is used for JSON parsing of consumer configs over the wire,
+// where durations are sent as human-readable strings like "2s" instead of nanosecond integers.
+type wireConsumerConfig struct {
+	Name             string   `json:"name"`
+	Stream           string   `json:"stream"`
+	Ordering         string   `json:"ordering,omitempty"`
+	WindowDuration   string   `json:"window_duration,omitempty"`
+	WatermarkTimeout string   `json:"watermark_timeout,omitempty"`
+	DedupKey         []string `json:"dedup_key,omitempty"`
+	LatePolicy       string   `json:"late_policy,omitempty"`
+	DeliverPolicy    string   `json:"deliver_policy,omitempty"`
+	DeliverFromTime  uint64   `json:"deliver_from_time,omitempty"`
+	SubjectFilter    string   `json:"subject_filter,omitempty"`
+}
+
+func (p *ProtocolParser) parseConsumerCreate(parts []string) (*ConsumerCreateCommand, error) {
+	// CONSUMER CREATE <json_config>\r\n
+	if len(parts) < 3 {
+		return nil, fmt.Errorf("CONSUMER CREATE requires JSON config argument")
+	}
+	jsonStr := strings.Join(parts[2:], " ")
+	var wire wireConsumerConfig
+	if err := json.Unmarshal([]byte(jsonStr), &wire); err != nil {
+		return nil, fmt.Errorf("invalid consumer config: %w", err)
+	}
+
+	cfg := ConsumerConfig{
+		Name:            wire.Name,
+		Stream:          wire.Stream,
+		Ordering:        wire.Ordering,
+		DedupKey:        wire.DedupKey,
+		DeliverFromTime: wire.DeliverFromTime,
+		SubjectFilter:   wire.SubjectFilter,
+	}
+
+	if wire.LatePolicy != "" {
+		cfg.LatePolicy = LatePolicy(wire.LatePolicy)
+	}
+	if wire.DeliverPolicy != "" {
+		cfg.DeliverPolicy = DeliverPolicy(wire.DeliverPolicy)
+	}
+	if wire.WindowDuration != "" {
+		d, err := time.ParseDuration(wire.WindowDuration)
+		if err != nil {
+			return nil, fmt.Errorf("invalid window_duration: %w", err)
+		}
+		cfg.WindowDuration = d
+	}
+	if wire.WatermarkTimeout != "" {
+		d, err := time.ParseDuration(wire.WatermarkTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("invalid watermark_timeout: %w", err)
+		}
+		cfg.WatermarkTimeout = d
+	}
+
+	return &ConsumerCreateCommand{Config: cfg}, nil
+}
+
+func (p *ProtocolParser) parseConsumerDelete(parts []string) (*ConsumerDeleteCommand, error) {
+	// CONSUMER DELETE <stream> <name>\r\n
+	if len(parts) < 4 {
+		return nil, fmt.Errorf("CONSUMER DELETE requires stream and consumer name")
+	}
+	return &ConsumerDeleteCommand{Stream: parts[2], Name: parts[3]}, nil
+}
+
+func (p *ProtocolParser) parseConsumerList(parts []string) (*ConsumerListCommand, error) {
+	// CONSUMER LIST <stream>\r\n
+	if len(parts) < 3 {
+		return nil, fmt.Errorf("CONSUMER LIST requires stream name")
+	}
+	return &ConsumerListCommand{Stream: parts[2]}, nil
+}
+
+func (p *ProtocolParser) parseConsumerInfo(parts []string) (*ConsumerInfoCommand, error) {
+	// CONSUMER INFO <stream> <name>\r\n
+	if len(parts) < 4 {
+		return nil, fmt.Errorf("CONSUMER INFO requires stream and consumer name")
+	}
+	return &ConsumerInfoCommand{Stream: parts[2], Name: parts[3]}, nil
+}
+
 // FormatOK formats a +OK response.
 func FormatOK(seq uint64) string {
 	return fmt.Sprintf("+OK %d\r\n", seq)
@@ -318,6 +563,30 @@ func FormatPositions(positions map[string]*SourcePosition, watermark uint64) str
 	}
 	data, _ := marshalJSON(posMap)
 	return fmt.Sprintf("+POSITIONS %s\r\n", data)
+}
+
+// FormatStreamInfo formats a +STREAM.INFO response.
+func FormatStreamInfo(state *StreamState) string {
+	data, _ := json.Marshal(state)
+	return fmt.Sprintf("+STREAM.INFO %s\r\n", data)
+}
+
+// FormatStreamList formats a +STREAM.LIST response.
+func FormatStreamList(names []string) string {
+	data, _ := json.Marshal(names)
+	return fmt.Sprintf("+STREAM.LIST %s\r\n", data)
+}
+
+// FormatConsumerInfo formats a +CONSUMER.INFO response.
+func FormatConsumerInfo(state *ConsumerState) string {
+	data, _ := json.Marshal(state)
+	return fmt.Sprintf("+CONSUMER.INFO %s\r\n", data)
+}
+
+// FormatConsumerList formats a +CONSUMER.LIST response.
+func FormatConsumerList(names []string) string {
+	data, _ := json.Marshal(names)
+	return fmt.Sprintf("+CONSUMER.LIST %s\r\n", data)
 }
 
 func marshalJSON(v interface{}) ([]byte, error) {
