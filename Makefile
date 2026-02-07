@@ -1,4 +1,4 @@
-.PHONY: build test vet kind-create kind-delete kind-load kind-deploy kind-wait kind-test test-e2e-kind \
+.PHONY: build test vet bench bench-short bench-compare kind-create kind-delete kind-load kind-deploy kind-wait kind-test test-e2e-kind \
 	generate manifests operator-build operator-docker-build install-controller-gen
 
 CLUSTER_NAME ?= medelanden-test
@@ -25,6 +25,15 @@ test:
 
 test-integration:
 	go test -v -count=1 -timeout 180s -run 'TestIntegration' ./broker/...
+
+bench:
+	go test -bench=. -benchmem -count=1 -timeout 300s -run='^$$' ./broker/...
+
+bench-short:
+	go test -bench='Benchmark(NodePublish|WALAppend|ProtocolParse)' -benchmem -count=1 -timeout 120s -run='^$$' ./broker/...
+
+bench-compare:
+	go test -bench=. -benchmem -count=1 -timeout 300s -run='TestThroughputComparison' -v ./bench/...
 
 ## Kind e2e targets
 
