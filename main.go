@@ -19,7 +19,7 @@ func main() {
 		nodeID    = flag.String("id", "", "Node ID (required)")
 		dataDir   = flag.String("data-dir", "./data", "Data directory")
 		bindAddr  = flag.String("bind", "0.0.0.0:4222", "Client TCP bind address")
-		peerAddr  = flag.String("peer-addr", "", "Peer-to-peer HTTP address (e.g., 0.0.0.0:4223)")
+		peerAddr  = flag.String("peer-addr", "0.0.0.0:4223", "Peer-to-peer gRPC address")
 		httpAddr  = flag.String("http", "0.0.0.0:8080", "HTTP health/metrics address")
 		seeds     = flag.String("seeds", "", "Comma-separated list of seed peer addresses")
 		streamDef = flag.String("stream", "", "JSON stream definition to create on startup")

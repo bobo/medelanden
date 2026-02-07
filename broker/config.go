@@ -83,6 +83,27 @@ func DefaultConsumerConfig(name, stream string) ConsumerConfig {
 	}
 }
 
+// StreamState is a detailed snapshot of a stream's current state.
+type StreamState struct {
+	Name          string       `json:"name"`
+	Config        StreamConfig `json:"config"`
+	Messages      uint64       `json:"messages"`
+	FirstSeq      uint64       `json:"first_seq"`
+	LastSeq       uint64       `json:"last_seq"`
+	ConsumerCount int          `json:"consumer_count"`
+}
+
+// ConsumerState is a detailed snapshot of a consumer's current state.
+type ConsumerState struct {
+	Name         string                     `json:"name"`
+	Stream       string                     `json:"stream"`
+	Config       ConsumerConfig             `json:"config"`
+	Watermark    uint64                     `json:"watermark"`
+	LateMessages uint64                     `json:"late_messages"`
+	DedupCount   uint64                     `json:"dedup_count"`
+	Positions    map[string]*SourcePosition `json:"positions"`
+}
+
 // NodeConfig configures a single broker node.
 type NodeConfig struct {
 	ID       string `json:"id"`

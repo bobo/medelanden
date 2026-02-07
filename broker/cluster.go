@@ -40,6 +40,8 @@ type Cluster struct {
 	onJoin  func(peer *PeerInfo)
 	onLeave func(peer *PeerInfo)
 
+	promMetrics *Metrics
+
 	stopCh  chan struct{}
 	stopped bool
 }
@@ -160,9 +162,17 @@ func (c *Cluster) gossipLoop() {
 	}
 }
 
+// SetMetrics sets the Prometheus metrics for the cluster.
+func (c *Cluster) SetMetrics(m *Metrics) {
+	c.promMetrics = m
+}
+
 func (c *Cluster) gossipOnce() {
 	if c.getState == nil {
 		return
+	}
+	if c.promMetrics != nil {
+		c.promMetrics.GossipRoundsTotal.Inc()
 	}
 	state := c.getState()
 

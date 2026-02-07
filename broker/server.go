@@ -9,6 +9,9 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Server handles client TCP connections and the HTTP health/metrics endpoints.
@@ -54,6 +57,17 @@ func (s *Server) StartHTTP(addr string) error {
 
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/metrics", s.handleMetrics)
+
+	// Prometheus metrics endpoint: merge the node's custom registry with Go
+	// runtime/process collectors via a gatherer that combines both.
+	promHandler := promhttp.HandlerFor(
+		prometheus.Gatherers{
+			s.node.PrometheusRegistry(),
+			prometheus.DefaultGatherer,
+		},
+		promhttp.HandlerOpts{},
+	)
+	mux.Handle("/metrics/prometheus", promHandler)
 
 	// Register replication endpoints if the node has a replicator
 	if s.node.replicator != nil {
@@ -102,7 +116,10 @@ func (s *Server) acceptLoop() {
 }
 
 func (s *Server) handleConn(conn net.Conn) {
+	pm := s.node.PromMetrics()
+	pm.TCPConnections.Inc()
 	defer func() {
+		pm.TCPConnections.Dec()
 		conn.Close()
 		s.mu.Lock()
 		delete(s.conns, conn)
@@ -136,23 +153,48 @@ func (s *Server) handleConn(conn net.Conn) {
 
 		switch c := cmd.(type) {
 		case *PubCommand:
+			pm.TCPCommandsTotal.WithLabelValues("PUB").Inc()
 			s.handlePub(c, writer)
 		case *MPubCommand:
+			pm.TCPCommandsTotal.WithLabelValues("MPUB").Inc()
 			s.handleMPub(c, writer)
 		case *SubCommand:
+			pm.TCPCommandsTotal.WithLabelValues("SUB").Inc()
 			s.handleSub(c, writer, conn, subs)
 		case *MSubCommand:
+			pm.TCPCommandsTotal.WithLabelValues("MSUB").Inc()
 			s.handleMSub(c, writer, conn, subs)
 		case *AckCommand:
+			pm.TCPCommandsTotal.WithLabelValues("ACK").Inc()
 			s.handleAck(c, writer, subs)
 		case *AckWindowCommand:
+			pm.TCPCommandsTotal.WithLabelValues("ACKW").Inc()
 			s.handleAckWindow(c, writer, subs)
 		case *ResumeCommand:
+			pm.TCPCommandsTotal.WithLabelValues("RESUME").Inc()
 			s.handleResume(c, writer)
 		case *PingCommand:
+			pm.TCPCommandsTotal.WithLabelValues("PING").Inc()
 			writer.WriteString(FormatPong())
 		case *InfoCommand:
+			pm.TCPCommandsTotal.WithLabelValues("INFO").Inc()
 			s.handleInfo(writer)
+		case *StreamCreateCommand:
+			s.handleStreamCreate(c, writer)
+		case *StreamDeleteCommand:
+			s.handleStreamDelete(c, writer)
+		case *StreamListCommand:
+			s.handleStreamList(writer)
+		case *StreamInfoCommand:
+			s.handleStreamInfo(c, writer)
+		case *ConsumerCreateCommand:
+			s.handleConsumerCreate(c, writer, conn, subs)
+		case *ConsumerDeleteCommand:
+			s.handleConsumerDelete(c, writer, subs)
+		case *ConsumerListCommand:
+			s.handleConsumerList(c, writer)
+		case *ConsumerInfoCommand:
+			s.handleConsumerInfo(c, writer)
 		}
 		writer.Flush()
 	}
@@ -320,6 +362,78 @@ func (s *Server) deliverWindowed(consumer *Consumer, conn net.Conn, consumerName
 			return
 		}
 	}
+}
+
+func (s *Server) handleStreamCreate(cmd *StreamCreateCommand, w *bufio.Writer) {
+	cfg := cmd.Config
+	if cfg.FsyncPolicy == "" {
+		cfg.FsyncPolicy = FsyncInterval
+	}
+	if cfg.FsyncInterval == 0 {
+		cfg.FsyncInterval = 100 * time.Millisecond
+	}
+	if err := s.node.CreateStream(cfg); err != nil {
+		w.WriteString(FormatError(err.Error()))
+		return
+	}
+	w.WriteString(fmt.Sprintf("+OK\r\n"))
+}
+
+func (s *Server) handleStreamDelete(cmd *StreamDeleteCommand, w *bufio.Writer) {
+	if err := s.node.DeleteStream(cmd.Name); err != nil {
+		w.WriteString(FormatError(err.Error()))
+		return
+	}
+	w.WriteString(fmt.Sprintf("+OK\r\n"))
+}
+
+func (s *Server) handleStreamList(w *bufio.Writer) {
+	names := s.node.ListStreams()
+	w.WriteString(FormatStreamList(names))
+}
+
+func (s *Server) handleStreamInfo(cmd *StreamInfoCommand, w *bufio.Writer) {
+	state, err := s.node.StreamState(cmd.Name)
+	if err != nil {
+		w.WriteString(FormatError(err.Error()))
+		return
+	}
+	w.WriteString(FormatStreamInfo(state))
+}
+
+func (s *Server) handleConsumerCreate(cmd *ConsumerCreateCommand, w *bufio.Writer, conn net.Conn, subs map[string]*Consumer) {
+	cfg := cmd.Config
+	consumer, err := s.node.CreateConsumer(cfg)
+	if err != nil {
+		w.WriteString(FormatError(err.Error()))
+		return
+	}
+	subs[cfg.Name] = consumer
+	w.WriteString(fmt.Sprintf("+OK\r\n"))
+}
+
+func (s *Server) handleConsumerDelete(cmd *ConsumerDeleteCommand, w *bufio.Writer, subs map[string]*Consumer) {
+	// Remove from connection's subscription map if present
+	delete(subs, cmd.Name)
+	if err := s.node.DeleteConsumer(cmd.Stream, cmd.Name); err != nil {
+		w.WriteString(FormatError(err.Error()))
+		return
+	}
+	w.WriteString(fmt.Sprintf("+OK\r\n"))
+}
+
+func (s *Server) handleConsumerList(cmd *ConsumerListCommand, w *bufio.Writer) {
+	names := s.node.ListConsumers(cmd.Stream)
+	w.WriteString(FormatConsumerList(names))
+}
+
+func (s *Server) handleConsumerInfo(cmd *ConsumerInfoCommand, w *bufio.Writer) {
+	state, err := s.node.ConsumerState(cmd.Stream, cmd.Name)
+	if err != nil {
+		w.WriteString(FormatError(err.Error()))
+		return
+	}
+	w.WriteString(FormatConsumerInfo(state))
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

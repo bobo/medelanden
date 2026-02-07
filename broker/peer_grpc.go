@@ -252,17 +252,20 @@ type GRPCReplicator struct {
 	interval time.Duration
 	stopCh   chan struct{}
 	stopped  bool
+
+	promMetrics *Metrics
 }
 
 // NewGRPCReplicator creates a new gRPC-based replicator.
-func NewGRPCReplicator(nodeID string, cluster *Cluster, streams func() map[string]*Stream) *GRPCReplicator {
+func NewGRPCReplicator(nodeID string, cluster *Cluster, streams func() map[string]*Stream, promMetrics *Metrics) *GRPCReplicator {
 	return &GRPCReplicator{
-		nodeID:   nodeID,
-		cluster:  cluster,
-		streams:  streams,
-		client:   NewPeerGRPCClient(),
-		interval: 1 * time.Second,
-		stopCh:   make(chan struct{}),
+		nodeID:      nodeID,
+		cluster:     cluster,
+		streams:     streams,
+		client:      NewPeerGRPCClient(),
+		interval:    1 * time.Second,
+		stopCh:      make(chan struct{}),
+		promMetrics: promMetrics,
 	}
 }
 
@@ -375,6 +378,11 @@ func (r *GRPCReplicator) pullMessages(client pb.PeerServiceClient, streamName st
 	for _, m := range resp.Messages {
 		msg := protoToMsg(m)
 		stream.PublishReplicated(msg)
+	}
+
+	if r.promMetrics != nil && len(resp.Messages) > 0 {
+		r.promMetrics.ReplicatedMsgsTotal.WithLabelValues(streamName, resp.NodeId).Add(float64(len(resp.Messages)))
+		r.promMetrics.ReplicationPulls.WithLabelValues(streamName, resp.NodeId).Inc()
 	}
 }
 
