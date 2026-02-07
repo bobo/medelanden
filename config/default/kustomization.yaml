@@ -1,0 +1,6 @@
+namespace: medelanden-system
+
+resources:
+  - ../crd
+  - ../rbac
+  - ../manager

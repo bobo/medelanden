@@ -1,9 +1,18 @@
-.PHONY: build test vet kind-create kind-delete kind-load kind-deploy kind-wait kind-test test-e2e-kind
+.PHONY: build test vet kind-create kind-delete kind-load kind-deploy kind-wait kind-test test-e2e-kind \
+	generate manifests operator-build operator-docker-build install-controller-gen
 
 CLUSTER_NAME ?= medelanden-test
 IMAGE_TAG    ?= medelanden:test
+OPERATOR_TAG ?= medelanden-operator:test
 KIND_CONFIG  := e2e/manifests/kind-config.yaml
 K8S_MANIFEST := e2e/manifests/medelanden.yaml
+
+# Tool versions
+CONTROLLER_TOOLS_VERSION ?= v0.17.2
+
+# Tool binaries
+LOCALBIN ?= $(shell pwd)/bin
+CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 
 build:
 	go build -v ./...
@@ -52,3 +61,23 @@ test-e2e-kind: kind-create kind-load kind-deploy kind-wait kind-test
 
 install-kind:
 	go install sigs.k8s.io/kind@v0.27.0
+
+## Operator targets
+
+$(LOCALBIN):
+	mkdir -p $(LOCALBIN)
+
+install-controller-gen: $(LOCALBIN)
+	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
+
+generate: install-controller-gen ## Generate deepcopy methods.
+	$(CONTROLLER_GEN) object paths="./api/..."
+
+manifests: install-controller-gen ## Generate CRD and RBAC manifests.
+	$(CONTROLLER_GEN) crd rbac:roleName=medelanden-operator-role paths="./..." output:crd:artifacts:config=config/crd/bases output:rbac:dir=config/rbac
+
+operator-build: generate ## Build the operator binary.
+	go build -v -o bin/medelanden-operator ./cmd/operator
+
+operator-docker-build: ## Build the operator Docker image.
+	docker build -t $(OPERATOR_TAG) -f Dockerfile.operator .
