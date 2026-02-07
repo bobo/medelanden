@@ -32,6 +32,8 @@ rules:
   - medelanden.io
   resources:
   - medelandenclusters
+  - medelandenconsumers
+  - medelandenstreams
   verbs:
   - create
   - delete
@@ -44,12 +46,16 @@ rules:
   - medelanden.io
   resources:
   - medelandenclusters/finalizers
+  - medelandenconsumers/finalizers
+  - medelandenstreams/finalizers
   verbs:
   - update
 - apiGroups:
   - medelanden.io
   resources:
   - medelandenclusters/status
+  - medelandenconsumers/status
+  - medelandenstreams/status
   verbs:
   - get
   - patch

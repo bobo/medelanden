@@ -1,0 +1,34 @@
+apiVersion: medelanden.io/v1alpha1
+kind: MedelandenConsumer
+metadata:
+  name: events-processor
+  namespace: default
+spec:
+  clusterRef: my-cluster
+  stream: events
+  ordering: producer_ts
+  windowDuration: "2s"
+  watermarkTimeout: "5s"
+  dedupKey:
+    - msg_id
+  latePolicy: drop
+  deliverPolicy: all
+  subjectFilter: ">"
+---
+apiVersion: medelanden.io/v1alpha1
+kind: MedelandenConsumer
+metadata:
+  name: telemetry-aggregator
+  namespace: default
+spec:
+  clusterRef: my-cluster
+  stream: telemetry
+  ordering: producer_ts
+  windowDuration: "5s"
+  watermarkTimeout: "10s"
+  dedupKey:
+    - msg_id
+    - dedup_key
+  latePolicy: emit_unordered
+  deliverPolicy: new
+  subjectFilter: "sensors.>"

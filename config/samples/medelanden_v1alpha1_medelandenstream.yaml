@@ -1,0 +1,28 @@
+apiVersion: medelanden.io/v1alpha1
+kind: MedelandenStream
+metadata:
+  name: events
+  namespace: default
+spec:
+  clusterRef: my-cluster
+  subjects:
+    - "events.>"
+  replicationTarget: 2
+  fsyncPolicy: interval
+  fsyncIntervalMs: 100
+---
+apiVersion: medelanden.io/v1alpha1
+kind: MedelandenStream
+metadata:
+  name: telemetry
+  namespace: default
+spec:
+  clusterRef: my-cluster
+  subjects:
+    - "sensors.>"
+    - "metrics.>"
+  maxAge: "168h"
+  maxBytes: 1073741824
+  replicationTarget: 3
+  fsyncPolicy: interval
+  fsyncIntervalMs: 200
