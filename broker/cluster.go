@@ -2,10 +2,13 @@ package broker
 
 import (
 	"context"
+	"crypto/tls"
 	"sync"
 	"time"
 
 	pb "medelanden/proto/pb"
+
+	"go.uber.org/zap"
 )
 
 // PeerState represents the health state of a peer.
@@ -33,6 +36,7 @@ type Cluster struct {
 	addr   string // this node's peer address
 	peers  map[string]*PeerInfo
 	config ClusterConfig
+	logger *zap.Logger
 
 	getState func() ClusterState
 	client   *PeerGRPCClient
@@ -55,15 +59,24 @@ type ClusterState struct {
 }
 
 // NewCluster creates a new cluster membership manager.
-func NewCluster(nodeID, addr string, config ClusterConfig) *Cluster {
+func NewCluster(nodeID, addr string, config ClusterConfig, logger *zap.Logger) *Cluster {
 	return &Cluster{
 		nodeID: nodeID,
 		addr:   addr,
 		peers:  make(map[string]*PeerInfo),
 		config: config,
-		client: NewPeerGRPCClient(),
+		logger: logger,
+		client: NewPeerGRPCClient(nil),
 		stopCh: make(chan struct{}),
 	}
+}
+
+// SetPeerTLS replaces the cluster's gRPC client with one configured for TLS.
+func (c *Cluster) SetPeerTLS(cfg *tls.Config) {
+	if c.client != nil {
+		c.client.Close()
+	}
+	c.client = NewPeerGRPCClient(cfg)
 }
 
 // SetStateFunc sets the function that returns the current cluster state.
@@ -126,6 +139,7 @@ func (c *Cluster) updatePeerFromGossip(nodeID, peerAddr string, peers map[string
 			LastSeen: time.Now(),
 		}
 		c.peers[nodeID] = peer
+		c.logger.Info("peer joined", zap.String("peer", nodeID), zap.String("addr", peerAddr))
 		if c.onJoin != nil {
 			go c.onJoin(peer)
 		}
@@ -241,6 +255,7 @@ func (c *Cluster) failureDetectionLoop() {
 			for _, p := range c.peers {
 				if p.State == PeerAlive && now.Sub(p.LastSeen) > c.config.FailureTimeout {
 					p.State = PeerDead
+					c.logger.Info("peer marked dead", zap.String("peer", p.ID), zap.Duration("since", now.Sub(p.LastSeen)))
 					if c.onLeave != nil {
 						go c.onLeave(p)
 					}

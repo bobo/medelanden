@@ -1,12 +1,15 @@
 package broker
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // =============================================================================
@@ -534,7 +537,7 @@ func TestClusterSeedNodeDown(t *testing.T) {
 		GossipInterval: 100 * time.Millisecond,
 		FailureTimeout: 500 * time.Millisecond,
 	}
-	cluster := NewCluster("node-alone", "127.0.0.1:19999", cfg)
+	cluster := NewCluster("node-alone", "127.0.0.1:19999", cfg, zap.NewNop())
 
 	// Join with unreachable seeds -- should not error
 	err := cluster.Join([]string{"127.0.0.1:29999", "127.0.0.1:39999"})
@@ -557,7 +560,7 @@ func TestClusterPeerFailureDetection(t *testing.T) {
 		GossipInterval: 50 * time.Millisecond,
 		FailureTimeout: 100 * time.Millisecond,
 	}
-	cluster := NewCluster("node-1", "127.0.0.1:19999", cfg)
+	cluster := NewCluster("node-1", "127.0.0.1:19999", cfg, zap.NewNop())
 
 	// Manually add a peer that was recently alive
 	cluster.mu.Lock()
@@ -590,7 +593,7 @@ func TestClusterPeerFailureDetection(t *testing.T) {
 // FM-C3: Gossip from self is ignored.
 func TestClusterGossipFromSelfIgnored(t *testing.T) {
 	cfg := DefaultClusterConfig()
-	cluster := NewCluster("node-1", "127.0.0.1:19999", cfg)
+	cluster := NewCluster("node-1", "127.0.0.1:19999", cfg, zap.NewNop())
 
 	// Simulate gossip from ourselves
 	cluster.updatePeerFromGossip("node-1", "127.0.0.1:19999", nil, "")
@@ -604,7 +607,7 @@ func TestClusterGossipFromSelfIgnored(t *testing.T) {
 // FM-C4: Gossip learns about new peers transitively.
 func TestClusterGossipTransitivePeerDiscovery(t *testing.T) {
 	cfg := DefaultClusterConfig()
-	cluster := NewCluster("node-1", "127.0.0.1:19999", cfg)
+	cluster := NewCluster("node-1", "127.0.0.1:19999", cfg, zap.NewNop())
 
 	// Node-2 tells us about node-3 (which we haven't seen directly)
 	transitivePeers := map[string]string{
@@ -627,7 +630,7 @@ func TestClusterGossipTransitivePeerDiscovery(t *testing.T) {
 // FM-C5: Seed entries are cleaned up after gossip identifies the real node.
 func TestClusterSeedCleanup(t *testing.T) {
 	cfg := DefaultClusterConfig()
-	cluster := NewCluster("node-1", "127.0.0.1:19999", cfg)
+	cluster := NewCluster("node-1", "127.0.0.1:19999", cfg, zap.NewNop())
 
 	// Add seed entry
 	cluster.Join([]string{"127.0.0.1:29999"})
@@ -703,7 +706,7 @@ func TestConcurrentPublishSafety(t *testing.T) {
 // FM-X2: Double stop is safe (idempotent).
 func TestNodeDoubleStop(t *testing.T) {
 	dir := tempDir(t)
-	cfg := NodeConfig{ID: "node-double", DataDir: dir}
+	cfg := NodeConfig{ID: "node-double", DataDir: dir, BindAddr: "127.0.0.1:0"}
 	node, err := NewNode(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -714,11 +717,11 @@ func TestNodeDoubleStop(t *testing.T) {
 	node.CreateStream(streamCfg)
 
 	// First stop
-	if err := node.Stop(); err != nil {
+	if err := node.Stop(context.Background()); err != nil {
 		t.Fatalf("first stop: %v", err)
 	}
 	// Second stop should not panic
-	if err := node.Stop(); err != nil {
+	if err := node.Stop(context.Background()); err != nil {
 		t.Fatalf("second stop: %v", err)
 	}
 }
@@ -750,7 +753,7 @@ func TestConsumerDoubleStop(t *testing.T) {
 // FM-X4: Cluster double stop is safe.
 func TestClusterDoubleStop(t *testing.T) {
 	cfg := DefaultClusterConfig()
-	cluster := NewCluster("node-1", "127.0.0.1:19999", cfg)
+	cluster := NewCluster("node-1", "127.0.0.1:19999", cfg, zap.NewNop())
 
 	cluster.Stop()
 	// Second stop should not panic

@@ -1,12 +1,15 @@
 package broker
 
 import (
+	"context"
+	"crypto/tls"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"go.uber.org/zap"
 )
 
 // Node is a single Medelanden broker instance. It ties together streams,
@@ -14,6 +17,7 @@ import (
 type Node struct {
 	mu     sync.RWMutex
 	config NodeConfig
+	logger *zap.Logger
 
 	streams       map[string]*Stream
 	consumers     map[string]*Consumer
@@ -74,11 +78,27 @@ type ConsumerMetricSnapshot struct {
 
 // NewNode creates a new broker node.
 func NewNode(config NodeConfig) (*Node, error) {
+	if err := config.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid node config: %w", err)
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
+	if config.Limits == (LimitsConfig{}) {
+		config.Limits = DefaultLimitsConfig()
+	}
+
+	MaxMessageSize = config.Limits.MaxMessageSize
+
 	reg := prometheus.NewRegistry()
 	m := NewMetrics(reg)
 
 	n := &Node{
 		config:      config,
+		logger:      logger,
 		streams:     make(map[string]*Stream),
 		consumers:   make(map[string]*Consumer),
 		stopCh:      make(chan struct{}),
@@ -112,12 +132,27 @@ func (n *Node) Start() error {
 	if n.config.PeerAddr != "" {
 		advertiseAddr := n.config.EffectiveAdvertisePeerAddr()
 		clusterCfg := DefaultClusterConfig()
-		n.cluster = NewCluster(n.config.ID, advertiseAddr, clusterCfg)
+		n.cluster = NewCluster(n.config.ID, advertiseAddr, clusterCfg, n.logger.Named("cluster"))
 		n.cluster.SetMetrics(n.promMetrics)
 		n.cluster.SetStateFunc(n.clusterState)
 
+		// Build TLS configs for peer connections
+		var serverTLSCfg, clientTLSCfg *tls.Config
+		if n.config.TLS.Enabled {
+			var err error
+			serverTLSCfg, err = BuildServerTLSConfig(n.config.TLS)
+			if err != nil {
+				return fmt.Errorf("build server TLS config: %w", err)
+			}
+			clientTLSCfg, err = BuildClientTLSConfig(n.config.TLS)
+			if err != nil {
+				return fmt.Errorf("build client TLS config: %w", err)
+			}
+			n.cluster.SetPeerTLS(clientTLSCfg)
+		}
+
 		// Start gRPC peer server on the bind address, but advertise the routable address
-		n.peerServer = NewPeerGRPCServer(n.config.ID, n.config.PeerAddr, n.cluster, n.getStreams, n.clusterState)
+		n.peerServer = NewPeerGRPCServer(n.config.ID, n.config.PeerAddr, n.cluster, n.getStreams, n.clusterState, serverTLSCfg, n.logger.Named("peer-grpc"))
 		if err := n.peerServer.Start(); err != nil {
 			return fmt.Errorf("start gRPC peer server: %w", err)
 		}
@@ -132,11 +167,12 @@ func (n *Node) Start() error {
 		}
 
 		// Start gRPC-based replication
-		n.grpcReplicator = NewGRPCReplicator(n.config.ID, n.cluster, n.getStreams, n.promMetrics)
+		n.grpcReplicator = NewGRPCReplicator(n.config.ID, n.cluster, n.getStreams, n.promMetrics, clientTLSCfg, n.logger.Named("replicator"))
 		n.grpcReplicator.Start()
 	}
 
 	n.started = true
+	n.logger.Info("node started", zap.String("id", n.config.ID))
 
 	go n.metricsCollectorLoop()
 
@@ -144,7 +180,7 @@ func (n *Node) Start() error {
 }
 
 // Stop shuts down the node. It is safe to call multiple times.
-func (n *Node) Stop() error {
+func (n *Node) Stop(ctx context.Context) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
@@ -152,12 +188,19 @@ func (n *Node) Stop() error {
 		return nil
 	}
 	n.stopped = true
+	n.logger.Info("node stopping", zap.String("id", n.config.ID))
 
 	close(n.stopCh)
 
 	// Stop consumers
 	for _, c := range n.consumers {
 		c.Stop()
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
 	}
 
 	// Stop gRPC replicator
@@ -172,7 +215,7 @@ func (n *Node) Stop() error {
 
 	// Stop gRPC peer server
 	if n.peerServer != nil {
-		n.peerServer.Stop()
+		n.peerServer.Stop(ctx)
 	}
 
 	// Stop cluster
@@ -230,15 +273,32 @@ func (n *Node) collectPrometheusMetrics() {
 	}
 }
 
+// Logger returns the node's logger.
+func (n *Node) Logger() *zap.Logger {
+	return n.logger
+}
+
 // ID returns the node's unique identifier.
 func (n *Node) ID() string {
 	return n.config.ID
 }
 
+func (n *Node) Config() NodeConfig {
+	return n.config
+}
+
 // CreateStream creates and registers a new stream on this node.
 func (n *Node) CreateStream(cfg StreamConfig) error {
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid stream config: %w", err)
+	}
+
 	n.mu.Lock()
 	defer n.mu.Unlock()
+
+	if len(n.streams) >= n.config.Limits.MaxStreams {
+		return fmt.Errorf("maximum number of streams (%d) reached", n.config.Limits.MaxStreams)
+	}
 
 	if _, exists := n.streams[cfg.Name]; exists {
 		return fmt.Errorf("stream %s already exists", cfg.Name)
@@ -250,6 +310,7 @@ func (n *Node) CreateStream(cfg StreamConfig) error {
 	}
 
 	n.streams[cfg.Name] = stream
+	n.logger.Info("stream created", zap.String("stream", cfg.Name))
 	return nil
 }
 
@@ -322,8 +383,16 @@ func (n *Node) FindStreamForSubject(subject string) string {
 
 // CreateConsumer creates a new durable consumer.
 func (n *Node) CreateConsumer(cfg ConsumerConfig) (*Consumer, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid consumer config: %w", err)
+	}
+
 	n.mu.Lock()
 	defer n.mu.Unlock()
+
+	if _, ok := n.consumers[cfg.Name]; !ok && len(n.consumers) >= n.config.Limits.MaxConsumers {
+		return nil, fmt.Errorf("maximum number of consumers (%d) reached", n.config.Limits.MaxConsumers)
+	}
 
 	if existing, ok := n.consumers[cfg.Name]; ok {
 		return existing, nil
@@ -352,6 +421,7 @@ func (n *Node) CreateConsumer(cfg ConsumerConfig) (*Consumer, error) {
 	}
 
 	n.consumers[cfg.Name] = consumer
+	n.logger.Info("consumer created", zap.String("consumer", cfg.Name), zap.String("stream", cfg.Stream))
 	return consumer, nil
 }
 
@@ -454,6 +524,7 @@ func (n *Node) DeleteStream(name string) error {
 
 	stream.Close()
 	delete(n.streams, name)
+	n.logger.Info("stream deleted", zap.String("stream", name))
 	return nil
 }
 
@@ -517,6 +588,7 @@ func (n *Node) DeleteConsumer(stream, name string) error {
 
 	consumer.Stop()
 	delete(n.consumers, name)
+	n.logger.Info("consumer deleted", zap.String("consumer", name), zap.String("stream", stream))
 	return nil
 }
 

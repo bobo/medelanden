@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
@@ -36,6 +37,7 @@ func makeCluster(t *testing.T, n int, streamCfg StreamConfig) ([]*Node, []string
 		cfg := NodeConfig{
 			ID:       fmt.Sprintf("node-%d", i),
 			DataDir:  dir,
+			BindAddr: "127.0.0.1:0",
 			PeerAddr: peerAddrs[i],
 			Seeds:    peerAddrs,
 		}
@@ -59,7 +61,7 @@ func makeCluster(t *testing.T, n int, streamCfg StreamConfig) ([]*Node, []string
 
 	t.Cleanup(func() {
 		for _, n := range nodes {
-			n.Stop()
+			n.Stop(context.Background())
 		}
 	})
 
@@ -77,15 +79,16 @@ func TestIntegrationWriteWithPeersDown(t *testing.T) {
 
 	dir := tempDir(t)
 	cfg := NodeConfig{
-		ID:      "node-a",
-		DataDir: dir,
+		ID:       "node-a",
+		DataDir:  dir,
+		BindAddr: "127.0.0.1:0",
 	}
 
 	node, err := NewNode(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer node.Stop()
+	defer node.Stop(context.Background())
 
 	streamCfg := DefaultStreamConfig("test", []string{"test.>"})
 	streamCfg.FsyncPolicy = FsyncNone
@@ -209,10 +212,10 @@ func TestIntegrationWriteDuringPartition(t *testing.T) {
 	dir1 := tempDir(t)
 	dir2 := tempDir(t)
 
-	node1, _ := NewNode(NodeConfig{ID: "node-a", DataDir: dir1})
-	node2, _ := NewNode(NodeConfig{ID: "node-b", DataDir: dir2})
-	defer node1.Stop()
-	defer node2.Stop()
+	node1, _ := NewNode(NodeConfig{ID: "node-a", DataDir: dir1, BindAddr: "127.0.0.1:0"})
+	node2, _ := NewNode(NodeConfig{ID: "node-b", DataDir: dir2, BindAddr: "127.0.0.1:0"})
+	defer node1.Stop(context.Background())
+	defer node2.Stop(context.Background())
 
 	streamCfg := DefaultStreamConfig("test", []string{"test.>"})
 	streamCfg.FsyncPolicy = FsyncNone
@@ -272,8 +275,8 @@ func TestIntegrationSingleNodeSurvival(t *testing.T) {
 
 	// Create a single node (simulating last survivor of 5-node cluster)
 	dir := tempDir(t)
-	node, _ := NewNode(NodeConfig{ID: "node-survivor", DataDir: dir})
-	defer node.Stop()
+	node, _ := NewNode(NodeConfig{ID: "node-survivor", DataDir: dir, BindAddr: "127.0.0.1:0"})
+	defer node.Stop(context.Background())
 
 	streamCfg := DefaultStreamConfig("test", []string{"test.>"})
 	streamCfg.FsyncPolicy = FsyncNone
@@ -357,7 +360,7 @@ func TestIntegrationTCPServer(t *testing.T) {
 	if err := server.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer server.Stop()
+	defer server.Stop(context.Background())
 
 	// Connect and send PUB command
 	conn, err := net.DialTimeout("tcp", server.Addr(), 2*time.Second)
@@ -408,7 +411,7 @@ func TestIntegrationHealthEndpoint(t *testing.T) {
 
 	server := NewServer(tcpAddr, node)
 	server.Start()
-	defer server.Stop()
+	defer server.Stop(context.Background())
 	server.StartHTTP(httpAddr)
 
 	// Give server time to start
@@ -444,8 +447,8 @@ func TestIntegrationHealthEndpoint(t *testing.T) {
 // End-to-end test: publish -> read pipeline -> consumer output
 func TestIntegrationEndToEnd(t *testing.T) {
 	dir := tempDir(t)
-	node, _ := NewNode(NodeConfig{ID: "node-e2e", DataDir: dir})
-	defer node.Stop()
+	node, _ := NewNode(NodeConfig{ID: "node-e2e", DataDir: dir, BindAddr: "127.0.0.1:0"})
+	defer node.Stop(context.Background())
 
 	streamCfg := DefaultStreamConfig("test", []string{"test.>"})
 	streamCfg.FsyncPolicy = FsyncNone
@@ -530,7 +533,7 @@ func TestIntegrationStreamConsumerManagement(t *testing.T) {
 	if err := server.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer server.Stop()
+	defer server.Stop(context.Background())
 
 	conn, err := net.DialTimeout("tcp", server.Addr(), 2*time.Second)
 	if err != nil {

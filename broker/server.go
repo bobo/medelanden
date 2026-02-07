@@ -2,9 +2,13 @@ package broker
 
 import (
 	"bufio"
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"sync"
@@ -12,16 +16,20 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.uber.org/zap"
 )
 
 // Server handles client TCP connections and the HTTP health/metrics endpoints.
 type Server struct {
 	mu       sync.Mutex
 	node     *Node
+	logger   *zap.Logger
 	listener net.Listener
 	addr     string
-	conns    map[net.Conn]struct{}
-	stopCh   chan struct{}
+	conns      map[net.Conn]struct{}
+	limits     LimitsConfig
+	authConfig AuthConfig
+	stopCh     chan struct{}
 	stopped  bool
 
 	httpServer *http.Server
@@ -31,10 +39,13 @@ type Server struct {
 // NewServer creates a new TCP server for the wire protocol.
 func NewServer(addr string, node *Node) *Server {
 	return &Server{
-		node:   node,
-		addr:   addr,
-		conns:  make(map[net.Conn]struct{}),
-		stopCh: make(chan struct{}),
+		node:       node,
+		logger:     node.Logger().Named("server"),
+		addr:       addr,
+		conns:      make(map[net.Conn]struct{}),
+		limits:     node.Config().Limits,
+		authConfig: node.Config().Auth,
+		stopCh:     make(chan struct{}),
 	}
 }
 
@@ -44,8 +55,17 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.addr, err)
 	}
-	s.listener = ln
 
+	if s.node.Config().TLS.Enabled {
+		tlsCfg, err := BuildServerTLSConfig(s.node.Config().TLS)
+		if err != nil {
+			ln.Close()
+			return fmt.Errorf("build TLS config: %w", err)
+		}
+		ln = tls.NewListener(ln, tlsCfg)
+	}
+
+	s.listener = ln
 	go s.acceptLoop()
 	return nil
 }
@@ -87,7 +107,7 @@ func (s *Server) StartHTTP(addr string) error {
 
 	go func() {
 		if err := s.httpServer.ListenAndServe(); err != http.ErrServerClosed {
-			log.Printf("HTTP server error: %v", err)
+			s.logger.Error("HTTP server error", zap.Error(err))
 		}
 	}()
 
@@ -102,12 +122,18 @@ func (s *Server) acceptLoop() {
 			case <-s.stopCh:
 				return
 			default:
-				log.Printf("accept error: %v", err)
+				s.logger.Warn("accept error", zap.Error(err))
 				continue
 			}
 		}
 
 		s.mu.Lock()
+		if len(s.conns) >= s.limits.MaxConnections {
+			s.mu.Unlock()
+			s.logger.Warn("connection limit reached, rejecting", zap.Int("max", s.limits.MaxConnections))
+			conn.Close()
+			continue
+		}
 		s.conns[conn] = struct{}{}
 		s.mu.Unlock()
 
@@ -128,6 +154,12 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	parser := NewProtocolParser(conn)
 	writer := bufio.NewWriter(conn)
+
+	if s.authConfig.Enabled {
+		if !s.authenticate(conn, parser, writer) {
+			return
+		}
+	}
 
 	// Active subscriptions for this connection
 	subs := make(map[string]*Consumer)
@@ -195,6 +227,8 @@ func (s *Server) handleConn(conn net.Conn) {
 			s.handleConsumerList(c, writer)
 		case *ConsumerInfoCommand:
 			s.handleConsumerInfo(c, writer)
+		case *ConnectCommand:
+			writer.WriteString(FormatError("unexpected CONNECT"))
 		}
 		writer.Flush()
 	}
@@ -456,8 +490,91 @@ func (s *Server) Addr() string {
 	return s.addr
 }
 
-// Stop shuts down the server.
-func (s *Server) Stop() error {
+// authenticate performs the NKey challenge-response handshake on a new connection.
+func (s *Server) authenticate(conn net.Conn, parser *ProtocolParser, writer *bufio.Writer) bool {
+	timeout := s.authConfig.ConnectTimeout
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+
+	// Generate nonce
+	nonce := make([]byte, 32)
+	if _, err := rand.Read(nonce); err != nil {
+		s.logger.Error("failed to generate auth nonce", zap.Error(err))
+		return false
+	}
+	nonceB64 := base64.StdEncoding.EncodeToString(nonce)
+
+	// Send server INFO with nonce
+	infoPayload := struct {
+		NodeID string `json:"node_id"`
+		Nonce  string `json:"nonce"`
+	}{
+		NodeID: s.node.ID(),
+		Nonce:  nonceB64,
+	}
+	infoJSON, _ := json.Marshal(infoPayload)
+	fmt.Fprintf(writer, "INFO %s\r\n", infoJSON)
+	writer.Flush()
+
+	// Read CONNECT within timeout
+	conn.SetReadDeadline(time.Now().Add(timeout))
+	cmd, err := parser.ParseCommand()
+	if err != nil {
+		writer.WriteString(FormatError("auth timeout"))
+		writer.Flush()
+		return false
+	}
+
+	connectCmd, ok := cmd.(*ConnectCommand)
+	if !ok {
+		writer.WriteString(FormatError("expected CONNECT"))
+		writer.Flush()
+		return false
+	}
+
+	// Check if key is authorized
+	authorized := false
+	for _, ak := range s.authConfig.AuthorizedKeys {
+		if ak == connectCmd.PubKey {
+			authorized = true
+			break
+		}
+	}
+	if !authorized {
+		writer.WriteString(FormatError("unauthorized"))
+		writer.Flush()
+		return false
+	}
+
+	// Decode public key and verify signature
+	pubKeyBytes, err := base64.StdEncoding.DecodeString(connectCmd.PubKey)
+	if err != nil || len(pubKeyBytes) != ed25519.PublicKeySize {
+		writer.WriteString(FormatError("invalid public key"))
+		writer.Flush()
+		return false
+	}
+
+	sigBytes, err := base64.StdEncoding.DecodeString(connectCmd.Signature)
+	if err != nil {
+		writer.WriteString(FormatError("invalid signature"))
+		writer.Flush()
+		return false
+	}
+
+	if !ed25519.Verify(pubKeyBytes, nonce, sigBytes) {
+		writer.WriteString(FormatError("invalid signature"))
+		writer.Flush()
+		return false
+	}
+
+	writer.WriteString("+OK\r\n")
+	writer.Flush()
+	return true
+}
+
+// Stop shuts down the server, waiting for connections to drain or context to expire.
+func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
@@ -472,7 +589,26 @@ func (s *Server) Stop() error {
 		s.listener.Close()
 	}
 	if s.httpServer != nil {
-		s.httpServer.Close()
+		s.httpServer.Shutdown(ctx)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		for {
+			s.mu.Lock()
+			remaining := len(s.conns)
+			s.mu.Unlock()
+			if remaining == 0 {
+				close(done)
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 
 	s.mu.Lock()

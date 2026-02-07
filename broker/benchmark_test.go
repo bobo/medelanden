@@ -2,6 +2,7 @@ package broker
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -356,11 +357,11 @@ func BenchmarkStreamMatchSubject_NoMatch(b *testing.B) {
 
 func BenchmarkNodePublish(b *testing.B) {
 	dir := b.TempDir()
-	node, err := NewNode(NodeConfig{ID: "bench-node", DataDir: dir})
+	node, err := NewNode(NodeConfig{ID: "bench-node", DataDir: dir, BindAddr: "127.0.0.1:0"})
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer node.Stop()
+	defer node.Stop(context.Background())
 
 	cfg := DefaultStreamConfig("test", []string{"test.>"})
 	cfg.FsyncPolicy = FsyncNone
@@ -379,11 +380,11 @@ func BenchmarkNodePublish(b *testing.B) {
 
 func BenchmarkNodePublish_LargePayload(b *testing.B) {
 	dir := b.TempDir()
-	node, err := NewNode(NodeConfig{ID: "bench-node", DataDir: dir})
+	node, err := NewNode(NodeConfig{ID: "bench-node", DataDir: dir, BindAddr: "127.0.0.1:0"})
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer node.Stop()
+	defer node.Stop(context.Background())
 
 	cfg := DefaultStreamConfig("test", []string{"test.>"})
 	cfg.FsyncPolicy = FsyncNone
@@ -403,11 +404,11 @@ func BenchmarkNodePublish_LargePayload(b *testing.B) {
 
 func BenchmarkNodePublish_PrePopulatedID(b *testing.B) {
 	dir := b.TempDir()
-	node, err := NewNode(NodeConfig{ID: "bench-node", DataDir: dir})
+	node, err := NewNode(NodeConfig{ID: "bench-node", DataDir: dir, BindAddr: "127.0.0.1:0"})
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer node.Stop()
+	defer node.Stop(context.Background())
 
 	cfg := DefaultStreamConfig("test", []string{"test.>"})
 	cfg.FsyncPolicy = FsyncNone
@@ -428,11 +429,11 @@ func BenchmarkNodePublish_PrePopulatedID(b *testing.B) {
 
 func BenchmarkNodePublish_Concurrent(b *testing.B) {
 	dir := b.TempDir()
-	node, err := NewNode(NodeConfig{ID: "bench-node", DataDir: dir})
+	node, err := NewNode(NodeConfig{ID: "bench-node", DataDir: dir, BindAddr: "127.0.0.1:0"})
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer node.Stop()
+	defer node.Stop(context.Background())
 
 	cfg := DefaultStreamConfig("test", []string{"test.>"})
 	cfg.FsyncPolicy = FsyncNone
@@ -726,11 +727,11 @@ func BenchmarkFormatWindowBatch(b *testing.B) {
 
 func BenchmarkEndToEnd_PublishAndRead(b *testing.B) {
 	dir := b.TempDir()
-	node, err := NewNode(NodeConfig{ID: "bench-node", DataDir: dir})
+	node, err := NewNode(NodeConfig{ID: "bench-node", DataDir: dir, BindAddr: "127.0.0.1:0"})
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer node.Stop()
+	defer node.Stop(context.Background())
 
 	cfg := DefaultStreamConfig("test", []string{"test.>"})
 	cfg.FsyncPolicy = FsyncNone
@@ -763,11 +764,11 @@ func BenchmarkNodePublish_PayloadSizes(b *testing.B) {
 	for _, size := range sizes {
 		b.Run(fmt.Sprintf("%dB", size), func(b *testing.B) {
 			dir := b.TempDir()
-			node, err := NewNode(NodeConfig{ID: "bench-node", DataDir: dir})
+			node, err := NewNode(NodeConfig{ID: "bench-node", DataDir: dir, BindAddr: "127.0.0.1:0"})
 			if err != nil {
 				b.Fatal(err)
 			}
-			defer node.Stop()
+			defer node.Stop(context.Background())
 
 			cfg := DefaultStreamConfig("test", []string{"test.>"})
 			cfg.FsyncPolicy = FsyncNone
@@ -797,11 +798,11 @@ func BenchmarkNodePublish_Goroutines(b *testing.B) {
 	for _, g := range goroutines {
 		b.Run(fmt.Sprintf("%d-goroutines", g), func(b *testing.B) {
 			dir := b.TempDir()
-			node, err := NewNode(NodeConfig{ID: "bench-node", DataDir: dir})
+			node, err := NewNode(NodeConfig{ID: "bench-node", DataDir: dir, BindAddr: "127.0.0.1:0"})
 			if err != nil {
 				b.Fatal(err)
 			}
-			defer node.Stop()
+			defer node.Stop(context.Background())
 
 			cfg := DefaultStreamConfig("test", []string{"test.>"})
 			cfg.FsyncPolicy = FsyncNone

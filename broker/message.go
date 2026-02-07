@@ -9,6 +9,8 @@ import (
 	"strings"
 )
 
+var MaxMessageSize int64 = 64 * 1024 * 1024
+
 // Message represents a single message in the broker.
 type Message struct {
 	Subject    string `json:"subject"`
@@ -71,7 +73,7 @@ func DecodeMessage(r io.Reader) (*Message, error) {
 		return nil, err
 	}
 	size := binary.BigEndian.Uint32(lenBuf[:])
-	if size > 64*1024*1024 { // 64MB max message size
+	if size > uint32(MaxMessageSize) {
 		return nil, fmt.Errorf("message too large: %d bytes", size)
 	}
 	data := make([]byte, size)
