@@ -1,0 +1,56 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: medelanden-operator-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - statefulsets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - medelanden.io
+  resources:
+  - medelandenclusters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - medelanden.io
+  resources:
+  - medelandenclusters/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - medelanden.io
+  resources:
+  - medelandenclusters/status
+  verbs:
+  - get
+  - patch
+  - update

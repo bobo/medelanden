@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: medelanden-operator
+  namespace: medelanden-system
+  labels:
+    app.kubernetes.io/name: medelanden-operator
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: medelanden-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: medelanden-operator
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      terminationGracePeriodSeconds: 10
+      serviceAccountName: medelanden-operator
+      containers:
+        - name: manager
+          image: medelanden-operator:latest
+          args:
+            - "--leader-elect"
+            - "--health-probe-bind-address=:8384"
+            - "--metrics-bind-address=:8383"
+          ports:
+            - name: metrics
+              containerPort: 8383
+            - name: health
+              containerPort: 8384
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8384
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8384
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            limits:
+              cpu: 500m
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 64Mi

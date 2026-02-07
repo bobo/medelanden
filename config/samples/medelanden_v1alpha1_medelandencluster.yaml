@@ -1,0 +1,20 @@
+apiVersion: medelanden.io/v1alpha1
+kind: MedelandenCluster
+metadata:
+  name: my-cluster
+  namespace: default
+spec:
+  replicas: 3
+  image: medelanden:latest
+  storage:
+    size: 1Gi
+  streams:
+    - name: events
+      subjects:
+        - "events.>"
+      replicationTarget: 2
+    - name: telemetry
+      subjects:
+        - "sensors.>"
+        - "metrics.>"
+      replicationTarget: 2

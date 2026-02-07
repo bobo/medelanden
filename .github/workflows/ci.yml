@@ -33,5 +33,11 @@ jobs:
       - name: Integration Tests
         run: go test -v -count=1 -timeout 180s -run 'TestIntegration' ./broker/...
 
+      - name: Install envtest binaries
+        run: |
+          go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+          ENVTEST_DIR=$(setup-envtest use -p path)
+          echo "KUBEBUILDER_ASSETS=${ENVTEST_DIR}" >> "$GITHUB_ENV"
+
       - name: All Tests
         run: go test -v -count=1 -timeout 180s ./...
