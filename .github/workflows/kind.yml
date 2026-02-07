@@ -1,0 +1,57 @@
+name: Kind E2E
+
+on:
+  push:
+    branches: [ main, 'claude/**' ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  e2e:
+    name: Kind integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Create Kind cluster
+        uses: helm/kind-action@v1.12.0
+        with:
+          cluster_name: medelanden-test
+          config: e2e/manifests/kind-config.yaml
+          wait: 60s
+
+      - name: Build Docker image
+        run: docker build -t medelanden:test .
+
+      - name: Load image into Kind
+        run: kind load docker-image medelanden:test --name medelanden-test
+
+      - name: Deploy medelanden
+        run: kubectl apply -f e2e/manifests/medelanden.yaml
+
+      - name: Wait for rollout
+        run: kubectl -n medelanden rollout status statefulset/medelanden --timeout=120s
+
+      - name: Wait for gossip convergence
+        run: sleep 10
+
+      - name: Run e2e tests
+        run: |
+          go test -v -count=1 -timeout 300s -tags e2e ./e2e/... \
+            -kind-context kind-medelanden-test \
+            -namespace medelanden
+
+      - name: Collect pod logs on failure
+        if: failure()
+        run: |
+          echo "=== Pod status ==="
+          kubectl -n medelanden get pods -o wide
+          for pod in medelanden-0 medelanden-1 medelanden-2; do
+            echo "=== Logs from $pod ==="
+            kubectl -n medelanden logs "$pod" --tail=100 || true
+          done
