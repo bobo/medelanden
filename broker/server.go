@@ -179,6 +179,22 @@ func (s *Server) handleConn(conn net.Conn) {
 		case *InfoCommand:
 			pm.TCPCommandsTotal.WithLabelValues("INFO").Inc()
 			s.handleInfo(writer)
+		case *StreamCreateCommand:
+			s.handleStreamCreate(c, writer)
+		case *StreamDeleteCommand:
+			s.handleStreamDelete(c, writer)
+		case *StreamListCommand:
+			s.handleStreamList(writer)
+		case *StreamInfoCommand:
+			s.handleStreamInfo(c, writer)
+		case *ConsumerCreateCommand:
+			s.handleConsumerCreate(c, writer, conn, subs)
+		case *ConsumerDeleteCommand:
+			s.handleConsumerDelete(c, writer, subs)
+		case *ConsumerListCommand:
+			s.handleConsumerList(c, writer)
+		case *ConsumerInfoCommand:
+			s.handleConsumerInfo(c, writer)
 		}
 		writer.Flush()
 	}
@@ -346,6 +362,78 @@ func (s *Server) deliverWindowed(consumer *Consumer, conn net.Conn, consumerName
 			return
 		}
 	}
+}
+
+func (s *Server) handleStreamCreate(cmd *StreamCreateCommand, w *bufio.Writer) {
+	cfg := cmd.Config
+	if cfg.FsyncPolicy == "" {
+		cfg.FsyncPolicy = FsyncInterval
+	}
+	if cfg.FsyncInterval == 0 {
+		cfg.FsyncInterval = 100 * time.Millisecond
+	}
+	if err := s.node.CreateStream(cfg); err != nil {
+		w.WriteString(FormatError(err.Error()))
+		return
+	}
+	w.WriteString(fmt.Sprintf("+OK\r\n"))
+}
+
+func (s *Server) handleStreamDelete(cmd *StreamDeleteCommand, w *bufio.Writer) {
+	if err := s.node.DeleteStream(cmd.Name); err != nil {
+		w.WriteString(FormatError(err.Error()))
+		return
+	}
+	w.WriteString(fmt.Sprintf("+OK\r\n"))
+}
+
+func (s *Server) handleStreamList(w *bufio.Writer) {
+	names := s.node.ListStreams()
+	w.WriteString(FormatStreamList(names))
+}
+
+func (s *Server) handleStreamInfo(cmd *StreamInfoCommand, w *bufio.Writer) {
+	state, err := s.node.StreamState(cmd.Name)
+	if err != nil {
+		w.WriteString(FormatError(err.Error()))
+		return
+	}
+	w.WriteString(FormatStreamInfo(state))
+}
+
+func (s *Server) handleConsumerCreate(cmd *ConsumerCreateCommand, w *bufio.Writer, conn net.Conn, subs map[string]*Consumer) {
+	cfg := cmd.Config
+	consumer, err := s.node.CreateConsumer(cfg)
+	if err != nil {
+		w.WriteString(FormatError(err.Error()))
+		return
+	}
+	subs[cfg.Name] = consumer
+	w.WriteString(fmt.Sprintf("+OK\r\n"))
+}
+
+func (s *Server) handleConsumerDelete(cmd *ConsumerDeleteCommand, w *bufio.Writer, subs map[string]*Consumer) {
+	// Remove from connection's subscription map if present
+	delete(subs, cmd.Name)
+	if err := s.node.DeleteConsumer(cmd.Stream, cmd.Name); err != nil {
+		w.WriteString(FormatError(err.Error()))
+		return
+	}
+	w.WriteString(fmt.Sprintf("+OK\r\n"))
+}
+
+func (s *Server) handleConsumerList(cmd *ConsumerListCommand, w *bufio.Writer) {
+	names := s.node.ListConsumers(cmd.Stream)
+	w.WriteString(FormatConsumerList(names))
+}
+
+func (s *Server) handleConsumerInfo(cmd *ConsumerInfoCommand, w *bufio.Writer) {
+	state, err := s.node.ConsumerState(cmd.Stream, cmd.Name)
+	if err != nil {
+		w.WriteString(FormatError(err.Error()))
+		return
+	}
+	w.WriteString(FormatConsumerInfo(state))
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

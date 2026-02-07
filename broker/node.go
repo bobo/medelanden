@@ -427,6 +427,130 @@ func (n *Node) Metrics() NodeMetrics {
 	return metrics
 }
 
+// DeleteStream removes a stream and all its consumers.
+func (n *Node) DeleteStream(name string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	stream, ok := n.streams[name]
+	if !ok {
+		return fmt.Errorf("stream %s not found", name)
+	}
+
+	// Stop and remove all consumers bound to this stream
+	for cname, c := range n.consumers {
+		if c.config.Stream == name {
+			c.Stop()
+			delete(n.consumers, cname)
+		}
+	}
+
+	stream.Close()
+	delete(n.streams, name)
+	return nil
+}
+
+// ListStreams returns the names of all streams.
+func (n *Node) ListStreams() []string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	names := make([]string, 0, len(n.streams))
+	for name := range n.streams {
+		names = append(names, name)
+	}
+	return names
+}
+
+// StreamState returns detailed state for a stream.
+func (n *Node) StreamState(name string) (*StreamState, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	stream, ok := n.streams[name]
+	if !ok {
+		return nil, fmt.Errorf("stream %s not found", name)
+	}
+
+	consumerCount := 0
+	for _, c := range n.consumers {
+		if c.config.Stream == name {
+			consumerCount++
+		}
+	}
+
+	firstSeq := uint64(0)
+	lastSeq := stream.LastSeq()
+	if lastSeq > 0 {
+		firstSeq = 1
+	}
+
+	return &StreamState{
+		Name:          name,
+		Config:        stream.Config(),
+		Messages:      stream.MessageCount(),
+		FirstSeq:      firstSeq,
+		LastSeq:       lastSeq,
+		ConsumerCount: consumerCount,
+	}, nil
+}
+
+// DeleteConsumer stops and removes a consumer.
+func (n *Node) DeleteConsumer(stream, name string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	consumer, ok := n.consumers[name]
+	if !ok {
+		return fmt.Errorf("consumer %s not found", name)
+	}
+
+	if consumer.config.Stream != stream {
+		return fmt.Errorf("consumer %s belongs to stream %s, not %s", name, consumer.config.Stream, stream)
+	}
+
+	consumer.Stop()
+	delete(n.consumers, name)
+	return nil
+}
+
+// ListConsumers returns the names of all consumers for a given stream.
+func (n *Node) ListConsumers(stream string) []string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	var names []string
+	for name, c := range n.consumers {
+		if c.config.Stream == stream {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// ConsumerState returns detailed state for a consumer.
+func (n *Node) ConsumerState(stream, name string) (*ConsumerState, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	consumer, ok := n.consumers[name]
+	if !ok {
+		return nil, fmt.Errorf("consumer %s not found", name)
+	}
+
+	if consumer.config.Stream != stream {
+		return nil, fmt.Errorf("consumer %s belongs to stream %s, not %s", name, consumer.config.Stream, stream)
+	}
+
+	return &ConsumerState{
+		Name:         name,
+		Stream:       stream,
+		Config:       consumer.config,
+		Watermark:    consumer.Watermark(),
+		LateMessages: consumer.LateMessages(),
+		DedupCount:   consumer.DedupCount(),
+		Positions:    consumer.Positions(),
+	}, nil
+}
+
 // clusterState returns the current cluster state for gossip exchange.
 func (n *Node) clusterState() ClusterState {
 	state := ClusterState{
