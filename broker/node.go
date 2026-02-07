@@ -5,6 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // Node is a single Medelanden broker instance. It ties together streams,
@@ -20,10 +22,14 @@ type Node struct {
 	grpcReplicator *GRPCReplicator
 	peerServer    *PeerGRPCServer
 
-	// Metrics
+	// Internal counters (kept for the JSON metrics endpoint)
 	writesTotal atomic.Uint64
 	writeLatSum atomic.Int64 // sum of write latencies in nanoseconds
 	writeCount  atomic.Int64
+
+	// Prometheus metrics
+	promMetrics *Metrics
+	promReg     *prometheus.Registry
 
 	started bool
 	stopCh  chan struct{}
@@ -67,14 +73,29 @@ type ConsumerMetricSnapshot struct {
 
 // NewNode creates a new broker node.
 func NewNode(config NodeConfig) (*Node, error) {
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+
 	n := &Node{
-		config:    config,
-		streams:   make(map[string]*Stream),
-		consumers: make(map[string]*Consumer),
-		stopCh:    make(chan struct{}),
+		config:      config,
+		streams:     make(map[string]*Stream),
+		consumers:   make(map[string]*Consumer),
+		stopCh:      make(chan struct{}),
+		promMetrics: m,
+		promReg:     reg,
 	}
 
 	return n, nil
+}
+
+// PrometheusRegistry returns the Prometheus registry for this node.
+func (n *Node) PrometheusRegistry() *prometheus.Registry {
+	return n.promReg
+}
+
+// PromMetrics returns the Prometheus metrics for this node.
+func (n *Node) PromMetrics() *Metrics {
+	return n.promMetrics
 }
 
 // Start initializes cluster membership and replication.
@@ -90,6 +111,7 @@ func (n *Node) Start() error {
 	if n.config.PeerAddr != "" {
 		clusterCfg := DefaultClusterConfig()
 		n.cluster = NewCluster(n.config.ID, n.config.PeerAddr, clusterCfg)
+		n.cluster.SetMetrics(n.promMetrics)
 		n.cluster.SetStateFunc(n.clusterState)
 
 		// Start gRPC peer server (handles gossip, replication, and pull)
@@ -108,11 +130,14 @@ func (n *Node) Start() error {
 		}
 
 		// Start gRPC-based replication
-		n.grpcReplicator = NewGRPCReplicator(n.config.ID, n.cluster, n.getStreams)
+		n.grpcReplicator = NewGRPCReplicator(n.config.ID, n.cluster, n.getStreams, n.promMetrics)
 		n.grpcReplicator.Start()
 	}
 
 	n.started = true
+
+	go n.metricsCollectorLoop()
+
 	return nil
 }
 
@@ -154,6 +179,48 @@ func (n *Node) Stop() error {
 	}
 
 	return nil
+}
+
+// metricsCollectorLoop periodically collects gauge-style Prometheus metrics.
+func (n *Node) metricsCollectorLoop() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			n.collectPrometheusMetrics()
+		case <-n.stopCh:
+			return
+		}
+	}
+}
+
+func (n *Node) collectPrometheusMetrics() {
+	n.mu.RLock()
+	for name, s := range n.streams {
+		n.promMetrics.StreamMessages.WithLabelValues(name).Set(float64(s.MessageCount()))
+	}
+	for name, c := range n.consumers {
+		n.promMetrics.ConsumerWatermark.WithLabelValues(name).Set(float64(c.Watermark()))
+	}
+	n.mu.RUnlock()
+
+	if n.cluster != nil {
+		alive, slow, dead := 0, 0, 0
+		for _, p := range n.cluster.Peers() {
+			switch p.State {
+			case PeerAlive:
+				alive++
+			case PeerSlow:
+				slow++
+			case PeerDead:
+				dead++
+			}
+		}
+		n.promMetrics.ClusterPeers.WithLabelValues("alive").Set(float64(alive))
+		n.promMetrics.ClusterPeers.WithLabelValues("slow").Set(float64(slow))
+		n.promMetrics.ClusterPeers.WithLabelValues("dead").Set(float64(dead))
+	}
 }
 
 // ID returns the node's unique identifier.
@@ -217,13 +284,18 @@ func (n *Node) Publish(msg *Message) (uint64, error) {
 
 	seq, err := targetStream.Publish(msg)
 	if err != nil {
+		n.promMetrics.PublishErrors.WithLabelValues(targetStream.Name()).Inc()
 		return 0, err
 	}
 
 	n.writesTotal.Add(1)
-	latency := time.Since(start).Nanoseconds()
-	n.writeLatSum.Add(latency)
+	latency := time.Since(start)
+	n.writeLatSum.Add(latency.Nanoseconds())
 	n.writeCount.Add(1)
+
+	streamName := targetStream.Name()
+	n.promMetrics.PublishTotal.WithLabelValues(streamName).Inc()
+	n.promMetrics.PublishLatency.WithLabelValues(streamName).Observe(latency.Seconds())
 
 	return seq, nil
 }
@@ -259,6 +331,7 @@ func (n *Node) CreateConsumer(cfg ConsumerConfig) (*Consumer, error) {
 	if err != nil {
 		return nil, err
 	}
+	consumer.SetMetrics(n.promMetrics)
 
 	// Add peer sources if cluster is available
 	if n.cluster != nil {
