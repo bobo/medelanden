@@ -16,13 +16,14 @@ import (
 
 func main() {
 	var (
-		nodeID    = flag.String("id", "", "Node ID (required)")
-		dataDir   = flag.String("data-dir", "./data", "Data directory")
-		bindAddr  = flag.String("bind", "0.0.0.0:4222", "Client TCP bind address")
-		peerAddr  = flag.String("peer-addr", "0.0.0.0:4223", "Peer-to-peer gRPC address")
-		httpAddr  = flag.String("http", "0.0.0.0:8080", "HTTP health/metrics address")
-		seeds     = flag.String("seeds", "", "Comma-separated list of seed peer addresses")
-		streamDef = flag.String("stream", "", "JSON stream definition to create on startup")
+		nodeID           = flag.String("id", "", "Node ID (required)")
+		dataDir          = flag.String("data-dir", "./data", "Data directory")
+		bindAddr         = flag.String("bind", "0.0.0.0:4222", "Client TCP bind address")
+		peerAddr         = flag.String("peer-addr", "0.0.0.0:4223", "Peer-to-peer gRPC listen address")
+		advertisePeer    = flag.String("advertise-peer-addr", "", "Address advertised to peers for gRPC (defaults to peer-addr)")
+		httpAddr         = flag.String("http", "0.0.0.0:8080", "HTTP health/metrics address")
+		seeds            = flag.String("seeds", "", "Comma-separated list of seed peer addresses")
+		streamDef        = flag.String("stream", "", "JSON stream definition to create on startup")
 	)
 	flag.Parse()
 
@@ -40,11 +41,12 @@ func main() {
 	}
 
 	cfg := broker.NodeConfig{
-		ID:       *nodeID,
-		DataDir:  *dataDir,
-		BindAddr: *bindAddr,
-		PeerAddr: *peerAddr,
-		Seeds:    seedList,
+		ID:                *nodeID,
+		DataDir:           *dataDir,
+		BindAddr:          *bindAddr,
+		PeerAddr:          *peerAddr,
+		AdvertisePeerAddr: *advertisePeer,
+		Seeds:             seedList,
 	}
 
 	node, err := broker.NewNode(cfg)

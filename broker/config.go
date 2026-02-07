@@ -106,11 +106,21 @@ type ConsumerState struct {
 
 // NodeConfig configures a single broker node.
 type NodeConfig struct {
-	ID       string `json:"id"`
-	DataDir  string `json:"data_dir"`
-	BindAddr string `json:"bind_addr"` // TCP address for client connections
-	PeerAddr string `json:"peer_addr"` // TCP address for peer-to-peer communication
-	Seeds    []string `json:"seeds,omitempty"`
+	ID                string   `json:"id"`
+	DataDir           string   `json:"data_dir"`
+	BindAddr          string   `json:"bind_addr"`           // TCP address for client connections
+	PeerAddr          string   `json:"peer_addr"`           // TCP address for peer-to-peer communication (listen)
+	AdvertisePeerAddr string   `json:"advertise_peer_addr"` // Address advertised to peers (defaults to PeerAddr)
+	Seeds             []string `json:"seeds,omitempty"`
+}
+
+// EffectiveAdvertisePeerAddr returns the address that should be advertised to peers.
+// If AdvertisePeerAddr is set, it is used. Otherwise, PeerAddr is used.
+func (c NodeConfig) EffectiveAdvertisePeerAddr() string {
+	if c.AdvertisePeerAddr != "" {
+		return c.AdvertisePeerAddr
+	}
+	return c.PeerAddr
 }
 
 // ClusterConfig configures cluster membership.

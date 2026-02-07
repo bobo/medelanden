@@ -69,7 +69,7 @@ func (s *PeerGRPCServer) Stop() {
 func (s *PeerGRPCServer) Gossip(ctx context.Context, req *pb.GossipRequest) (*pb.GossipResponse, error) {
 	// Update peer info from the incoming gossip
 	if req.NodeId != s.nodeID {
-		s.cluster.updatePeerFromGossip(req.NodeId, req.PeerAddr, req.Peers)
+		s.cluster.updatePeerFromGossip(req.NodeId, req.PeerAddr, req.Peers, "")
 	}
 
 	// Build our response
