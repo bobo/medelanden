@@ -1,2 +1,4 @@
 resources:
   - bases/medelanden.io_medelandenclusters.yaml
+  - bases/medelanden.io_medelandenstreams.yaml
+  - bases/medelanden.io_medelandenconsumers.yaml
