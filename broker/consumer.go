@@ -42,6 +42,8 @@ type Consumer struct {
 	// Metrics
 	lateMessages uint64
 	dedupCount   uint64
+
+	promMetrics *Metrics
 }
 
 // SourcePosition tracks the consumer's position on a specific source node.
@@ -109,6 +111,13 @@ func NewConsumer(config ConsumerConfig, stream *Stream, nodeID, dataDir string) 
 	}
 
 	return c, nil
+}
+
+// SetMetrics sets the Prometheus metrics for this consumer.
+func (c *Consumer) SetMetrics(m *Metrics) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.promMetrics = m
 }
 
 // SetPeerFetcher sets the function used to fetch data from peers.
@@ -275,6 +284,9 @@ func (c *Consumer) bufferMessage(msg *Message) {
 	// Check if this is a late arrival
 	if c.watermark > 0 && msg.ProducerTS < c.watermark {
 		c.lateMessages++
+		if c.promMetrics != nil {
+			c.promMetrics.ConsumerLateMessages.WithLabelValues(c.config.Name).Inc()
+		}
 		if c.config.LatePolicy == LatePolicyDrop {
 			return
 		}
@@ -442,6 +454,9 @@ func (c *Consumer) dedup(msgs []*Message) []*Message {
 		key := msg.EffectiveDedupKey(c.config.DedupKey)
 		if _, exists := seen[key]; exists {
 			c.dedupCount++
+			if c.promMetrics != nil {
+				c.promMetrics.ConsumerDedupTotal.WithLabelValues(c.config.Name).Inc()
+			}
 			continue
 		}
 		seen[key] = struct{}{}

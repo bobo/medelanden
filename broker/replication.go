@@ -24,6 +24,7 @@ type Replicator struct {
 
 	// Metrics
 	replicationLag map[string]time.Duration // peer -> lag
+	promMetrics    *Metrics
 }
 
 // ReplicationRequest asks a peer for messages in a range.
@@ -49,7 +50,7 @@ type DigestExchange struct {
 }
 
 // NewReplicator creates a new replication manager.
-func NewReplicator(nodeID string, cluster *Cluster, streams func() map[string]*Stream) *Replicator {
+func NewReplicator(nodeID string, cluster *Cluster, streams func() map[string]*Stream, promMetrics *Metrics) *Replicator {
 	return &Replicator{
 		nodeID:         nodeID,
 		cluster:        cluster,
@@ -57,6 +58,7 @@ func NewReplicator(nodeID string, cluster *Cluster, streams func() map[string]*S
 		interval:       1 * time.Second,
 		stopCh:         make(chan struct{}),
 		replicationLag: make(map[string]time.Duration),
+		promMetrics:    promMetrics,
 	}
 }
 
@@ -252,6 +254,14 @@ func (r *Replicator) pullMessages(client *http.Client, peer *PeerInfo, streamNam
 		return
 	}
 
+	peerLabel := peer.ID
+	if peerLabel == "" {
+		peerLabel = peer.PeerAddr
+	}
+	if r.promMetrics != nil {
+		r.promMetrics.ReplicationPulls.WithLabelValues(streamName, peerLabel).Inc()
+	}
+
 	url := fmt.Sprintf("http://%s/replication/pull", peer.PeerAddr)
 	resp, err := client.Post(url, "application/json", bytes.NewReader(data))
 	if err != nil {
@@ -272,6 +282,9 @@ func (r *Replicator) pullMessages(client *http.Client, peer *PeerInfo, streamNam
 	// Store replicated messages
 	for _, msg := range pullResp.Messages {
 		stream.PublishReplicated(msg)
+	}
+	if r.promMetrics != nil && len(pullResp.Messages) > 0 {
+		r.promMetrics.ReplicatedMsgsTotal.WithLabelValues(streamName, peerLabel).Add(float64(len(pullResp.Messages)))
 	}
 }
 

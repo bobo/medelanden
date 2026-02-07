@@ -9,6 +9,9 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Server handles client TCP connections and the HTTP health/metrics endpoints.
@@ -53,7 +56,18 @@ func (s *Server) StartHTTP(addr string) error {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/metrics", s.handleMetrics)
+	mux.HandleFunc("/metrics/json", s.handleMetrics)
+
+	// Prometheus metrics endpoint: merge the node's custom registry with Go
+	// runtime/process collectors via a gatherer that combines both.
+	promHandler := promhttp.HandlerFor(
+		prometheus.Gatherers{
+			s.node.PrometheusRegistry(),
+			prometheus.DefaultGatherer,
+		},
+		promhttp.HandlerOpts{},
+	)
+	mux.Handle("/metrics", promHandler)
 
 	// Register replication endpoints if the node has a replicator
 	if s.node.replicator != nil {
@@ -102,7 +116,10 @@ func (s *Server) acceptLoop() {
 }
 
 func (s *Server) handleConn(conn net.Conn) {
+	pm := s.node.PromMetrics()
+	pm.TCPConnections.Inc()
 	defer func() {
+		pm.TCPConnections.Dec()
 		conn.Close()
 		s.mu.Lock()
 		delete(s.conns, conn)
@@ -136,22 +153,31 @@ func (s *Server) handleConn(conn net.Conn) {
 
 		switch c := cmd.(type) {
 		case *PubCommand:
+			pm.TCPCommandsTotal.WithLabelValues("PUB").Inc()
 			s.handlePub(c, writer)
 		case *MPubCommand:
+			pm.TCPCommandsTotal.WithLabelValues("MPUB").Inc()
 			s.handleMPub(c, writer)
 		case *SubCommand:
+			pm.TCPCommandsTotal.WithLabelValues("SUB").Inc()
 			s.handleSub(c, writer, conn, subs)
 		case *MSubCommand:
+			pm.TCPCommandsTotal.WithLabelValues("MSUB").Inc()
 			s.handleMSub(c, writer, conn, subs)
 		case *AckCommand:
+			pm.TCPCommandsTotal.WithLabelValues("ACK").Inc()
 			s.handleAck(c, writer, subs)
 		case *AckWindowCommand:
+			pm.TCPCommandsTotal.WithLabelValues("ACKW").Inc()
 			s.handleAckWindow(c, writer, subs)
 		case *ResumeCommand:
+			pm.TCPCommandsTotal.WithLabelValues("RESUME").Inc()
 			s.handleResume(c, writer)
 		case *PingCommand:
+			pm.TCPCommandsTotal.WithLabelValues("PING").Inc()
 			writer.WriteString(FormatPong())
 		case *InfoCommand:
+			pm.TCPCommandsTotal.WithLabelValues("INFO").Inc()
 			s.handleInfo(writer)
 		}
 		writer.Flush()
