@@ -332,8 +332,10 @@ func TestIntegrationWriteThroughput(t *testing.T) {
 	rate := float64(count) / elapsed.Seconds()
 	t.Logf("Write throughput: %.0f msg/sec (%d messages in %v)", rate, count, elapsed)
 
-	// Should be able to do at least 10k msg/sec on a single node
-	if rate < 10000 {
+	// Threshold is kept low enough for shared CI runners (e.g. GitHub Actions)
+	// while still catching major regressions. Dedicated hardware typically
+	// achieves 30k+ msg/sec.
+	if rate < 2000 {
 		t.Errorf("write throughput too low: %.0f msg/sec", rate)
 	}
 }
@@ -437,13 +439,6 @@ func TestIntegrationHealthEndpoint(t *testing.T) {
 	if !strings.Contains(response, "node-http") {
 		t.Errorf("expected node-http in response body, got: %s", response[:min(len(response), 200)])
 	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // End-to-end test: publish -> read pipeline -> consumer output
