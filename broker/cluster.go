@@ -104,7 +104,9 @@ func (c *Cluster) Join(seeds []string) error {
 }
 
 // updatePeerFromGossip updates the peer table from an incoming gossip message.
-func (c *Cluster) updatePeerFromGossip(nodeID, peerAddr string, peers map[string]string) {
+// connectedVia is the address we used to reach this peer (may differ from the
+// peer's advertised address). It is used to clean up seed entries.
+func (c *Cluster) updatePeerFromGossip(nodeID, peerAddr string, peers map[string]string, connectedVia string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -129,9 +131,13 @@ func (c *Cluster) updatePeerFromGossip(nodeID, peerAddr string, peers map[string
 		}
 	}
 
-	// Remove seed entry if present
-	seedKey := "seed:" + peerAddr
-	delete(c.peers, seedKey)
+	// Remove seed entries: both the advertised address and the address
+	// we actually connected through (which may be a DNS name that differs
+	// from the advertised bind address).
+	delete(c.peers, "seed:"+peerAddr)
+	if connectedVia != "" && connectedVia != peerAddr {
+		delete(c.peers, "seed:"+connectedVia)
+	}
 
 	// Learn about new peers
 	for id, addr := range peers {
@@ -217,7 +223,7 @@ func (c *Cluster) gossipOnce() {
 			}
 
 			if resp.NodeId != "" && resp.NodeId != c.nodeID {
-				c.updatePeerFromGossip(resp.NodeId, resp.PeerAddr, resp.Peers)
+				c.updatePeerFromGossip(resp.NodeId, resp.PeerAddr, resp.Peers, peer.PeerAddr)
 			}
 		}(p)
 	}

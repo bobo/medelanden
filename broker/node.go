@@ -109,12 +109,13 @@ func (n *Node) Start() error {
 
 	// Initialize cluster if peer address is configured
 	if n.config.PeerAddr != "" {
+		advertiseAddr := n.config.EffectiveAdvertisePeerAddr()
 		clusterCfg := DefaultClusterConfig()
-		n.cluster = NewCluster(n.config.ID, n.config.PeerAddr, clusterCfg)
+		n.cluster = NewCluster(n.config.ID, advertiseAddr, clusterCfg)
 		n.cluster.SetMetrics(n.promMetrics)
 		n.cluster.SetStateFunc(n.clusterState)
 
-		// Start gRPC peer server (handles gossip, replication, and pull)
+		// Start gRPC peer server on the bind address, but advertise the routable address
 		n.peerServer = NewPeerGRPCServer(n.config.ID, n.config.PeerAddr, n.cluster, n.getStreams, n.clusterState)
 		if err := n.peerServer.Start(); err != nil {
 			return fmt.Errorf("start gRPC peer server: %w", err)
@@ -555,7 +556,7 @@ func (n *Node) ConsumerState(stream, name string) (*ConsumerState, error) {
 func (n *Node) clusterState() ClusterState {
 	state := ClusterState{
 		NodeID:   n.config.ID,
-		PeerAddr: n.config.PeerAddr,
+		PeerAddr: n.config.EffectiveAdvertisePeerAddr(),
 		Peers:    make(map[string]string),
 	}
 
