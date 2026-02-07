@@ -68,6 +68,11 @@ spec:
         - name: medelanden
           image: medelanden:test
           imagePullPolicy: Never
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
           ports:
             - name: client
               containerPort: 4222
@@ -78,6 +83,7 @@ spec:
           args:
             - "--bind=0.0.0.0:4222"
             - "--peer-addr=0.0.0.0:4223"
+            - "--advertise-peer-addr=$(POD_NAME).medelanden-headless.medelanden.svc.cluster.local:4223"
             - "--http=0.0.0.0:8080"
             - "--data-dir=/data"
             - "--seeds=medelanden-0.medelanden-headless.medelanden.svc.cluster.local:4223,medelanden-1.medelanden-headless.medelanden.svc.cluster.local:4223,medelanden-2.medelanden-headless.medelanden.svc.cluster.local:4223"
