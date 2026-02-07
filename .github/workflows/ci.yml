@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, 'claude/**' ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.24']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Build
+        run: go build -v ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Unit Tests
+        run: go test -v -short -count=1 -timeout 60s ./broker/...
+
+      - name: Integration Tests
+        run: go test -v -count=1 -timeout 180s -run 'TestIntegration' ./broker/...
+
+      - name: All Tests
+        run: go test -v -count=1 -timeout 180s ./...

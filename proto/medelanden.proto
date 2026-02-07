@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package medelanden;
+
+option go_package = "medelanden/proto/pb";
+
+// PeerService handles all peer-to-peer communication: gossip, replication, and
+// data pulling for the read-path merge.
+service PeerService {
+  // Gossip exchanges cluster membership state.
+  rpc Gossip(GossipRequest) returns (GossipResponse);
+
+  // ExchangeDigest exchanges stream digests for anti-entropy replication.
+  rpc ExchangeDigest(DigestRequest) returns (DigestResponse);
+
+  // PullMessages fetches a range of messages from a peer's stream.
+  rpc PullMessages(PullRequest) returns (PullResponse);
+
+  // Ping checks liveness.
+  rpc Ping(PingRequest) returns (PingResponse);
+}
+
+// --- Messages ---
+
+message Msg {
+  string subject     = 1;
+  bytes  payload     = 2;
+  uint64 producer_ts = 3;
+  string dedup_key   = 4;
+  string msg_id      = 5;
+  uint64 node_seq    = 6;
+  string node_id     = 7;
+  bool   late        = 8;
+}
+
+// --- Gossip ---
+
+message GossipRequest {
+  string node_id   = 1;
+  string peer_addr = 2;
+  map<string, string> peers = 3; // nodeID -> peerAddr
+  repeated StreamDigestProto stream_digests = 4;
+}
+
+message GossipResponse {
+  string node_id   = 1;
+  string peer_addr = 2;
+  map<string, string> peers = 3;
+  repeated StreamDigestProto stream_digests = 4;
+}
+
+message StreamDigestProto {
+  string stream  = 1;
+  string node_id = 2;
+  uint64 max_seq = 3;
+  uint64 max_ts  = 4;
+}
+
+// --- Replication ---
+
+message DigestRequest {
+  string node_id = 1;
+  map<string, StreamDigestProto> digests = 2; // stream name -> digest
+}
+
+message DigestResponse {
+  string node_id = 1;
+  map<string, StreamDigestProto> digests = 2;
+}
+
+message PullRequest {
+  string stream    = 1;
+  uint64 start_seq = 2;
+  uint64 end_seq   = 3;
+  int32  limit     = 4;
+}
+
+message PullResponse {
+  string stream    = 1;
+  string node_id   = 2;
+  repeated Msg messages = 3;
+}
+
+// --- Health ---
+
+message PingRequest {}
+
+message PingResponse {
+  string node_id = 1;
+}
