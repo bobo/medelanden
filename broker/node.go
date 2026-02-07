@@ -32,6 +32,7 @@ type Node struct {
 	promReg     *prometheus.Registry
 
 	started bool
+	stopped bool
 	stopCh  chan struct{}
 }
 
@@ -142,10 +143,15 @@ func (n *Node) Start() error {
 	return nil
 }
 
-// Stop shuts down the node.
+// Stop shuts down the node. It is safe to call multiple times.
 func (n *Node) Stop() error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+
+	if n.stopped {
+		return nil
+	}
+	n.stopped = true
 
 	close(n.stopCh)
 
