@@ -56,7 +56,7 @@ func (s *Server) StartHTTP(addr string) error {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/metrics/json", s.handleMetrics)
+	mux.HandleFunc("/metrics", s.handleMetrics)
 
 	// Prometheus metrics endpoint: merge the node's custom registry with Go
 	// runtime/process collectors via a gatherer that combines both.
@@ -67,7 +67,7 @@ func (s *Server) StartHTTP(addr string) error {
 		},
 		promhttp.HandlerOpts{},
 	)
-	mux.Handle("/metrics", promHandler)
+	mux.Handle("/metrics/prometheus", promHandler)
 
 	// Register replication endpoints if the node has a replicator
 	if s.node.replicator != nil {
