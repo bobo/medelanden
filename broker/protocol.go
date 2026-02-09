@@ -89,6 +89,15 @@ type InfoCommand struct{}
 
 func (c *InfoCommand) Type() string { return "INFO" }
 
+// ConnectCommand represents a CONNECT authentication handshake.
+// CONNECT <pub_key_b64> <signature_b64>\r\n
+type ConnectCommand struct {
+	PubKey    string
+	Signature string
+}
+
+func (c *ConnectCommand) Type() string { return "CONNECT" }
+
 // StreamCreateCommand creates a new stream.
 // STREAM.CREATE <json_config>\r\n
 type StreamCreateCommand struct {
@@ -217,6 +226,8 @@ func (p *ProtocolParser) ParseCommand() (Command, error) {
 		return p.parseAckWindow(parts)
 	case "RESUME":
 		return p.parseResume(parts)
+	case "CONNECT":
+		return p.parseConnect(parts)
 	case "PING":
 		return &PingCommand{}, nil
 	case "INFO":
@@ -358,6 +369,17 @@ func (p *ProtocolParser) parseResume(parts []string) (*ResumeCommand, error) {
 	}
 	return &ResumeCommand{
 		ConsumerName: parts[1],
+	}, nil
+}
+
+func (p *ProtocolParser) parseConnect(parts []string) (*ConnectCommand, error) {
+	// CONNECT <pub_key_b64> <signature_b64>\r\n
+	if len(parts) < 3 {
+		return nil, fmt.Errorf("CONNECT requires 2 arguments: pub_key, signature")
+	}
+	return &ConnectCommand{
+		PubKey:    parts[1],
+		Signature: parts[2],
 	}, nil
 }
 

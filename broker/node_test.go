@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -10,8 +11,9 @@ func makeTestNode(t *testing.T, id string) (*Node, string) {
 	dir := tempDir(t)
 
 	cfg := NodeConfig{
-		ID:      id,
-		DataDir: dir,
+		ID:       id,
+		DataDir:  dir,
+		BindAddr: "127.0.0.1:0",
 	}
 
 	node, err := NewNode(cfg)
@@ -19,7 +21,7 @@ func makeTestNode(t *testing.T, id string) (*Node, string) {
 		t.Fatal(err)
 	}
 
-	t.Cleanup(func() { node.Stop() })
+	t.Cleanup(func() { node.Stop(context.Background()) })
 	return node, dir
 }
 

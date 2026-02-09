@@ -553,3 +553,123 @@ func TestKindMetricsEndpoint(t *testing.T) {
 	}
 }
 
+// TestKindPublishSubscribe publishes messages to pod-0 and subscribes on pod-1,
+// verifying the full distributed path: write → replication → consumer delivery.
+func TestKindPublishSubscribe(t *testing.T) {
+	// Publish to pod-0
+	pubPort, pubCancel := portForward(t, podName(0), 4222)
+	defer pubCancel()
+
+	pubConn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", pubPort), 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial pod-0: %v", err)
+	}
+	defer pubConn.Close()
+
+	pubReader := bufio.NewReader(pubConn)
+	msgCount := 10
+
+	for i := 0; i < msgCount; i++ {
+		payload := fmt.Sprintf("e2e-sub-%d", i)
+		ts := uint64(i+1) * 6_000_000_000
+		cmd := fmt.Sprintf("PUB test.sub skey-%d %d %d\r\n%s\r\n",
+			i, ts, len(payload), payload)
+
+		pubConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		if _, err := pubConn.Write([]byte(cmd)); err != nil {
+			t.Fatalf("write msg %d: %v", i, err)
+		}
+
+		pubConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		line, err := pubReader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read response %d: %v", i, err)
+		}
+		if !strings.HasPrefix(line, "+OK") {
+			t.Fatalf("msg %d: expected +OK, got %q", i, strings.TrimSpace(line))
+		}
+	}
+
+	// Wait for replication to pod-1
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		httpPort, httpCancel := portForward(t, podName(1), 8080)
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/metrics", httpPort))
+		httpCancel()
+		if err != nil {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		var metrics nodeMetrics
+		json.NewDecoder(resp.Body).Decode(&metrics)
+		resp.Body.Close()
+
+		if metrics.Streams["test"] >= uint64(msgCount) {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	// Subscribe on pod-1
+	subPort, subCancel := portForward(t, podName(1), 4222)
+	defer subCancel()
+
+	subConn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", subPort), 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial pod-1: %v", err)
+	}
+	defer subConn.Close()
+
+	subReader := bufio.NewReader(subConn)
+
+	subConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if _, err := subConn.Write([]byte("SUB test.> e2e-consumer\r\n")); err != nil {
+		t.Fatalf("write SUB: %v", err)
+	}
+
+	subConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	line, err := subReader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read SUB response: %v", err)
+	}
+	if !strings.HasPrefix(line, "+OK") {
+		t.Fatalf("SUB: expected +OK, got %q", strings.TrimSpace(line))
+	}
+
+	// Read MSG frames
+	var received int
+	readDeadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(readDeadline) {
+		subConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		line, err := subReader.ReadString('\n')
+		if err != nil {
+			break
+		}
+		line = strings.TrimRight(line, "\r\n")
+
+		if !strings.HasPrefix(line, "MSG ") {
+			continue
+		}
+
+		parts := strings.Fields(line)
+		if len(parts) < 6 {
+			t.Fatalf("malformed MSG: %s", line)
+		}
+
+		// Read payload
+		size := 0
+		fmt.Sscanf(parts[5], "%d", &size)
+		payload := make([]byte, size+2)
+		subConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		io.ReadFull(subReader, payload)
+
+		received++
+	}
+
+	if received == 0 {
+		t.Fatal("no MSG frames received on pod-1 — cross-node subscribe failed")
+	}
+	t.Logf("received %d MSG frames on pod-1 via cross-node subscribe", received)
+}
+

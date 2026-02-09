@@ -23,6 +23,9 @@ package client
 
 import (
 	"bufio"
+	"crypto/ed25519"
+	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,6 +35,12 @@ import (
 	"sync"
 	"time"
 )
+
+// NKeyPair holds an Ed25519 key pair for NKey authentication.
+type NKeyPair struct {
+	PublicKey  ed25519.PublicKey
+	PrivateKey ed25519.PrivateKey
+}
 
 // Msg represents a message received from the broker.
 type Msg struct {
@@ -179,6 +188,12 @@ type Options struct {
 
 	// WriteTimeout is the deadline for writes to the server. Defaults to 5s.
 	WriteTimeout time.Duration
+
+	// TLSConfig enables TLS for the connection. Nil means plaintext.
+	TLSConfig *tls.Config
+
+	// NKey enables Ed25519 challenge-response authentication.
+	NKey *NKeyPair
 }
 
 // Option is a functional option for Dial.
@@ -192,6 +207,16 @@ func WithReadTimeout(d time.Duration) Option {
 // WithWriteTimeout sets the write deadline for commands sent to the server.
 func WithWriteTimeout(d time.Duration) Option {
 	return func(o *Options) { o.WriteTimeout = d }
+}
+
+// WithTLS configures TLS for the connection.
+func WithTLS(cfg *tls.Config) Option {
+	return func(o *Options) { o.TLSConfig = cfg }
+}
+
+// WithNKey configures NKey (Ed25519) authentication.
+func WithNKey(kp *NKeyPair) Option {
+	return func(o *Options) { o.NKey = kp }
 }
 
 // Client is a connection to a Medelanden broker node.
@@ -218,7 +243,15 @@ func Dial(addr string, opts ...Option) (*Client, error) {
 		fn(&o)
 	}
 
-	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	var conn net.Conn
+	var err error
+
+	if o.TLSConfig != nil {
+		dialer := &net.Dialer{Timeout: 10 * time.Second}
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, o.TLSConfig)
+	} else {
+		conn, err = net.DialTimeout("tcp", addr, 10*time.Second)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("medelanden: dial %s: %w", addr, err)
 	}
@@ -232,7 +265,75 @@ func Dial(addr string, opts ...Option) (*Client, error) {
 		subs:    make(map[string]*Subscription),
 	}
 
+	if o.NKey != nil {
+		if err := c.nkeyHandshake(); err != nil {
+			conn.Close()
+			return nil, err
+		}
+	}
+
 	return c, nil
+}
+
+// nkeyHandshake performs the Ed25519 challenge-response authentication.
+func (c *Client) nkeyHandshake() error {
+	c.conn.SetReadDeadline(time.Now().Add(c.opts.ReadTimeout))
+
+	// Read server INFO containing the nonce
+	line, err := c.reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("medelanden: read server INFO: %w", err)
+	}
+	line = strings.TrimRight(line, "\r\n")
+
+	if !strings.HasPrefix(line, "INFO ") {
+		return fmt.Errorf("medelanden: expected INFO, got: %s", line)
+	}
+
+	var serverInfo struct {
+		NodeID string `json:"node_id"`
+		Nonce  string `json:"nonce"`
+	}
+	if err := json.Unmarshal([]byte(line[5:]), &serverInfo); err != nil {
+		return fmt.Errorf("medelanden: parse server INFO: %w", err)
+	}
+
+	nonce, err := base64.StdEncoding.DecodeString(serverInfo.Nonce)
+	if err != nil {
+		return fmt.Errorf("medelanden: decode nonce: %w", err)
+	}
+
+	// Sign nonce with private key
+	signature := ed25519.Sign(c.opts.NKey.PrivateKey, nonce)
+
+	pubKeyB64 := base64.StdEncoding.EncodeToString(c.opts.NKey.PublicKey)
+	sigB64 := base64.StdEncoding.EncodeToString(signature)
+
+	c.conn.SetWriteDeadline(time.Now().Add(c.opts.WriteTimeout))
+	cmd := fmt.Sprintf("CONNECT %s %s\r\n", pubKeyB64, sigB64)
+	if _, err := c.writer.WriteString(cmd); err != nil {
+		return fmt.Errorf("medelanden: write CONNECT: %w", err)
+	}
+	if err := c.writer.Flush(); err != nil {
+		return fmt.Errorf("medelanden: flush CONNECT: %w", err)
+	}
+
+	// Read auth response
+	c.conn.SetReadDeadline(time.Now().Add(c.opts.ReadTimeout))
+	line, err = c.reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("medelanden: read auth response: %w", err)
+	}
+	line = strings.TrimRight(line, "\r\n")
+
+	if strings.HasPrefix(line, "-ERR ") {
+		return fmt.Errorf("medelanden: auth failed: %s", line[5:])
+	}
+	if !strings.HasPrefix(line, "+OK") {
+		return fmt.Errorf("medelanden: unexpected auth response: %s", line)
+	}
+
+	return nil
 }
 
 // Close shuts down the client connection.

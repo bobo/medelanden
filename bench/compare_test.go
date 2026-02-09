@@ -15,6 +15,7 @@ package bench
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -61,13 +62,14 @@ func startMedelandenNode(b *testing.B) *broker.Node {
 	b.Helper()
 	dir := b.TempDir()
 	node, err := broker.NewNode(broker.NodeConfig{
-		ID:      "bench-node",
-		DataDir: dir,
+		ID:       "bench-node",
+		DataDir:  dir,
+		BindAddr: "127.0.0.1:0",
 	})
 	if err != nil {
 		b.Fatal(err)
 	}
-	b.Cleanup(func() { node.Stop() })
+	b.Cleanup(func() { node.Stop(context.Background()) })
 	return node
 }
 
@@ -437,11 +439,11 @@ func TestThroughputComparison(t *testing.T) {
 
 	// --- Medelanden ---
 	dir := t.TempDir()
-	node, err := broker.NewNode(broker.NodeConfig{ID: "bench-node", DataDir: dir})
+	node, err := broker.NewNode(broker.NodeConfig{ID: "bench-node", DataDir: dir, BindAddr: "127.0.0.1:0"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer node.Stop()
+	defer node.Stop(context.Background())
 
 	cfg := broker.DefaultStreamConfig("test", []string{"test.>"})
 	cfg.FsyncPolicy = broker.FsyncNone
@@ -463,11 +465,11 @@ func TestThroughputComparison(t *testing.T) {
 
 	// --- Concurrent Medelanden ---
 	dir2 := t.TempDir()
-	node2, err := broker.NewNode(broker.NodeConfig{ID: "bench-node-2", DataDir: dir2})
+	node2, err := broker.NewNode(broker.NodeConfig{ID: "bench-node-2", DataDir: dir2, BindAddr: "127.0.0.1:0"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer node2.Stop()
+	defer node2.Stop(context.Background())
 
 	cfg2 := broker.DefaultStreamConfig("test", []string{"test.>"})
 	cfg2.FsyncPolicy = broker.FsyncNone

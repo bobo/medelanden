@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"sync"
@@ -9,7 +10,9 @@ import (
 
 	pb "medelanden/proto/pb"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -22,19 +25,23 @@ type PeerGRPCServer struct {
 	cluster    *Cluster
 	getStreams func() map[string]*Stream
 	getState   func() ClusterState
+	tlsConfig  *tls.Config
+	logger     *zap.Logger
 
 	server   *grpc.Server
 	listener net.Listener
 }
 
 // NewPeerGRPCServer creates a new gRPC peer server.
-func NewPeerGRPCServer(nodeID, peerAddr string, cluster *Cluster, getStreams func() map[string]*Stream, getState func() ClusterState) *PeerGRPCServer {
+func NewPeerGRPCServer(nodeID, peerAddr string, cluster *Cluster, getStreams func() map[string]*Stream, getState func() ClusterState, tlsConfig *tls.Config, logger *zap.Logger) *PeerGRPCServer {
 	return &PeerGRPCServer{
 		nodeID:     nodeID,
 		peerAddr:   peerAddr,
 		cluster:    cluster,
-		getStreams:  getStreams,
+		getStreams: getStreams,
 		getState:   getState,
+		tlsConfig:  tlsConfig,
+		logger:     logger,
 	}
 }
 
@@ -46,22 +53,37 @@ func (s *PeerGRPCServer) Start() error {
 	}
 	s.listener = ln
 
-	s.server = grpc.NewServer()
+	var opts []grpc.ServerOption
+	if s.tlsConfig != nil {
+		opts = append(opts, grpc.Creds(credentials.NewTLS(s.tlsConfig)))
+	}
+
+	s.server = grpc.NewServer(opts...)
 	pb.RegisterPeerServiceServer(s.server, s)
 
 	go func() {
 		if err := s.server.Serve(ln); err != nil {
-			// Log but don't crash
+			s.logger.Error("gRPC serve error", zap.Error(err))
 		}
 	}()
 
 	return nil
 }
 
-// Stop stops the gRPC server.
-func (s *PeerGRPCServer) Stop() {
-	if s.server != nil {
+// Stop stops the gRPC server, waiting for in-flight RPCs or context expiry.
+func (s *PeerGRPCServer) Stop(ctx context.Context) {
+	if s.server == nil {
+		return
+	}
+	stopped := make(chan struct{})
+	go func() {
 		s.server.GracefulStop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-ctx.Done():
+		s.server.Stop()
 	}
 }
 
@@ -162,14 +184,16 @@ func (s *PeerGRPCServer) Ping(ctx context.Context, req *pb.PingRequest) (*pb.Pin
 
 // PeerGRPCClient manages gRPC connections to peers.
 type PeerGRPCClient struct {
-	mu    sync.RWMutex
-	conns map[string]*grpc.ClientConn
+	mu        sync.RWMutex
+	conns     map[string]*grpc.ClientConn
+	tlsConfig *tls.Config
 }
 
-// NewPeerGRPCClient creates a new client pool.
-func NewPeerGRPCClient() *PeerGRPCClient {
+// NewPeerGRPCClient creates a new client pool. Pass nil for plaintext connections.
+func NewPeerGRPCClient(tlsConfig *tls.Config) *PeerGRPCClient {
 	return &PeerGRPCClient{
-		conns: make(map[string]*grpc.ClientConn),
+		conns:     make(map[string]*grpc.ClientConn),
+		tlsConfig: tlsConfig,
 	}
 }
 
@@ -191,8 +215,15 @@ func (c *PeerGRPCClient) GetClient(addr string) (pb.PeerServiceClient, error) {
 		return pb.NewPeerServiceClient(conn), nil
 	}
 
+	var creds credentials.TransportCredentials
+	if c.tlsConfig != nil {
+		creds = credentials.NewTLS(c.tlsConfig)
+	} else {
+		creds = insecure.NewCredentials()
+	}
+
 	conn, err := grpc.NewClient(addr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(creds),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("connect to peer %s: %w", addr, err)
@@ -252,20 +283,22 @@ type GRPCReplicator struct {
 	interval time.Duration
 	stopCh   chan struct{}
 	stopped  bool
+	logger   *zap.Logger
 
 	promMetrics *Metrics
 }
 
 // NewGRPCReplicator creates a new gRPC-based replicator.
-func NewGRPCReplicator(nodeID string, cluster *Cluster, streams func() map[string]*Stream, promMetrics *Metrics) *GRPCReplicator {
+func NewGRPCReplicator(nodeID string, cluster *Cluster, streams func() map[string]*Stream, promMetrics *Metrics, tlsConfig *tls.Config, logger *zap.Logger) *GRPCReplicator {
 	return &GRPCReplicator{
 		nodeID:      nodeID,
 		cluster:     cluster,
 		streams:     streams,
-		client:      NewPeerGRPCClient(),
+		client:      NewPeerGRPCClient(tlsConfig),
 		interval:    1 * time.Second,
 		stopCh:      make(chan struct{}),
 		promMetrics: promMetrics,
+		logger:      logger,
 	}
 }
 
